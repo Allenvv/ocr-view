@@ -22,7 +22,6 @@ import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.CameraState
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -77,11 +76,8 @@ class MainActivity : FlutterActivity() {
     private fun freshFrame() = frameMs > 0 && SystemClock.elapsedRealtime() - frameMs < 1500
 
     @Volatile private var frameMs = 0L
-    private var previewCrop: List<Double>? = null
-    private var cropWidth = 9
-    private var cropHeight = 16
-    private var bufferTurns = 0
-    private var previewUseCase: Preview? = null
+    private var raster: PreviewRaster? = null
+    private var analysisUseCase: ImageAnalysis? = null
     private var detail = "尚未打开后置相机"
     @Volatile private var generation = 0
     @Volatile private var latest: LumaFrame? = null
@@ -118,8 +114,9 @@ class MainActivity : FlutterActivity() {
                     else if (probeRunning) result.error("busy", "识别测试运行中", null)
                     else {
                         probeRunning = true
+                        val turns = currentDisplayTurns()
                         worker.execute {
-                            val reading = model?.recognize(frame, roi)
+                            val reading = model?.recognize(frame, roi, turns)
                             runOnUiThread { probeRunning = false; result.success(reading) }
                         }
                     }
@@ -136,17 +133,17 @@ class MainActivity : FlutterActivity() {
         val capacities = capacities()
         // The analysis/ROI coordinate system stays locked to rotation 0.
         // The preview texture and the editable ROI share the same display delta.
-        val display = displayRotation()
         val cameraInfo = boundCamera?.cameraInfo
-        val turns = if (cameraInfo == null) 0 else Math.floorMod(
-            cameraInfo.getSensorRotationDegrees(display) -
-                cameraInfo.getSensorRotationDegrees(Surface.ROTATION_0), 360) / 90
-        val swap = (turns + bufferTurns) % 2 != 0
-        return mapOf("textureId" to if (previewCrop != null) texture?.id() else null,
-            "width" to if (swap) cropHeight else cropWidth, "height" to if (swap) cropWidth else cropHeight,
-            "turns" to turns, "bufferTurns" to bufferTurns, "crop" to previewCrop,
+        val turns = currentDisplayTurns()
+        val frame = latest
+        val canonicalWidth = frame?.uprightWidth ?: 9
+        val canonicalHeight = frame?.uprightHeight ?: 16
+        val swap = turns % 2 != 0
+        return mapOf("textureId" to if (frame != null) texture?.id() else null,
+            "width" to if (swap) canonicalHeight else canonicalWidth, "height" to if (swap) canonicalWidth else canonicalHeight,
+            "turns" to turns, "bufferTurns" to 0, "viewportVersion" to 2,
             "modelAvailable" to modelAvailable, "modelProblem" to modelProblem,
-            "modelVersion" to model?.version, "modelSha256" to model?.sha256, "runtimeVersion" to "1.22.0",
+            "modelVersion" to model?.version, "modelSha256" to model?.sha256, "dictionarySha256" to model?.dictionarySha256, "runtimeVersion" to "1.22.0",
             "sessionId" to generation, "afState" to af, "aeState" to ae, "locked" to locked,
             "cameraId" to cameraInfo?.let { Camera2CameraInfo.from(it).cameraId },
             "fingerprint" to android.os.Build.FINGERPRINT, "analysisWidth" to latest?.uprightWidth, "analysisHeight" to latest?.uprightHeight,
@@ -176,16 +173,18 @@ class MainActivity : FlutterActivity() {
                 val cameras = future.get().also { provider = it }
                 val selector = CameraSelector.DEFAULT_BACK_CAMERA
                 require(cameras.hasCamera(selector)) { "未找到后置相机" }
-                // Keep a single rotation-0 CameraX viewport for preview, saved ROIs and analysis.
-                // Use a SurfaceTexture explicitly so Dart owns the CameraX crop and sensor rotation.
+                // A single analysis image owns RGB preview, OCR and metering coordinates.
                 val entry = registry.createSurfaceTexture().also { texture = it }
+                val renderer = PreviewRaster(entry).also { raster = it }
                 val display = displayRotation()
                 val sideways = display == Surface.ROTATION_90 || display == Surface.ROTATION_270
                 val naturalLandscape = (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) != sideways
                 val ratio = if (naturalLandscape) Rational(16, 9) else Rational(9, 16)
                 val rotation = Surface.ROTATION_0
-                val previewBuilder = Preview.Builder().setTargetRotation(rotation)
-                Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
+                @Suppress("DEPRECATION")
+                val builder = ImageAnalysis.Builder().setTargetResolution(Size(1280,720)).setTargetRotation(rotation)
+                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                Camera2Interop.Extender(builder).setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
                         if (generation != token) return
                         af = result.get(CaptureResult.CONTROL_AF_STATE)
@@ -193,46 +192,26 @@ class MainActivity : FlutterActivity() {
                         if (tuned && !locked) tuned = false
                     }
                 })
-                val preview = previewBuilder.build().also { useCase ->
-                    useCase.setSurfaceProvider { request ->
-                        if (texture !== entry) request.willNotProvideSurface()
-                        else {
-                            val resolution = request.resolution
-                            entry.surfaceTexture().setDefaultBufferSize(resolution.width, resolution.height)
-                            request.setTransformationInfoListener(main) { info ->
-                                if (texture === entry) {
-                                    val rect = info.cropRect
-                                    cropWidth = rect.width()
-                                    cropHeight = rect.height()
-                                    bufferTurns = info.rotationDegrees / 90
-                                    previewCrop = listOf(rect.left.toDouble()/resolution.width,
-                                        rect.top.toDouble()/resolution.height, rect.width().toDouble()/resolution.width,
-                                        rect.height().toDouble()/resolution.height)
-                                }
-                            }
-                            val surface = Surface(entry.surfaceTexture())
-                            request.provideSurface(surface, main) { surface.release() }
-                        }
-                    }
-                }
-                previewUseCase = preview
-                @Suppress("DEPRECATION")
-                val analysis = ImageAnalysis.Builder().setTargetResolution(Size(1280,720)).setTargetRotation(rotation)
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
+                val analysis = builder.build().also { analysisUseCase = it }
                 analysis.setAnalyzer(analysisWorker) { proxy ->
                     try {
-                        val now = System.currentTimeMillis()
-                        if (generation == token) {
-                            if (modelAvailable && now - (latest?.timestamp ?: 0L) >= 100) {
-                                val frame = runCatching { LumaFrame.from(proxy, now) }.getOrNull()
-                                if (generation == token) latest = frame
+                        val now = SystemClock.elapsedRealtime()
+                        if (generation == token && now - frameMs >= 83) {
+                            val frame = LumaFrame.from(proxy, System.currentTimeMillis())
+                            renderer.draw(frame)
+                            if (generation == token) {
+                                latest = frame
+                                frameMs = now
                             }
-                            frameMs = SystemClock.elapsedRealtime()
+                        }
+                    } catch (e: Exception) {
+                        if (generation == token) main.execute {
+                            if (generation == token) detail = "相机画面处理失败：${e.message}"
                         }
                     } finally { proxy.close() }
                 }
                 val viewPort = ViewPort.Builder(ratio, rotation).setScaleType(ViewPort.FILL_CENTER).build()
-                val group = UseCaseGroup.Builder().setViewPort(viewPort).addUseCase(preview).addUseCase(analysis).build()
+                val group = UseCaseGroup.Builder().setViewPort(viewPort).addUseCase(analysis).build()
                 val camera = cameras.bindToLifecycle(this,selector,group)
                 boundCamera = camera
                 camera.cameraInfo.cameraState.observe(this) { state ->
@@ -256,15 +235,10 @@ class MainActivity : FlutterActivity() {
             val u = (((roi["l"] as Number).toFloat() + (roi["r"] as Number).toFloat()) / 2)
             val v = (((roi["t"] as Number).toFloat() + (roi["b"] as Number).toFloat()) / 2)
             require(u in 0f..1f && v in 0f..1f)
-            val crop = requireNotNull(previewCrop)
-            val (x, y) = when (bufferTurns) {
-                1 -> v to 1-u
-                2 -> 1-u to 1-v
-                3 -> 1-v to u
-                else -> u to v
-            }
-            val point = SurfaceOrientedMeteringPointFactory(1f, 1f, requireNotNull(previewUseCase))
-                .createPoint((crop[0]+x*crop[2]).toFloat(), (crop[1]+y*crop[3]).toFloat())
+            val frame = requireNotNull(latest) { "相机还没有可用图像" }
+            val point = SurfaceOrientedMeteringPointFactory(1f, 1f, requireNotNull(analysisUseCase))
+                .createPoint(frame.fullFrameX(u.toDouble(), v.toDouble()).toFloat(),
+                    frame.fullFrameY(u.toDouble(), v.toDouble()).toFloat())
             FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE).disableAutoCancel().build()
         }
         try {
@@ -332,6 +306,12 @@ class MainActivity : FlutterActivity() {
     @Suppress("DEPRECATION")
     private fun displayRotation(): Int = windowManager.defaultDisplay.rotation
 
+    private fun currentDisplayTurns(): Int {
+        val cameraInfo = boundCamera?.cameraInfo ?: return 0
+        return Math.floorMod(cameraInfo.getSensorRotationDegrees(displayRotation()) -
+            cameraInfo.getSensorRotationDegrees(Surface.ROTATION_0), 360) / 90
+    }
+
     private fun sample(args: Map<*, *>?, result: MethodChannel.Result) {
         val token = generation
         val frame = latest
@@ -352,15 +332,16 @@ class MainActivity : FlutterActivity() {
         val low = (args["low"] as? Number)?.toDouble() ?: .60
         probeRunning = true
         val deadline = SystemClock.elapsedRealtime() + budget
+        val turns = currentDisplayTurns()
         worker.execute {
             val readings = mutableListOf<Map<String, Any>>()
             for (roi in rois) {
                 if (generation != token || SystemClock.elapsedRealtime() >= deadline) break
                 val region = requireNotNull(roi)
-                val reading = rec.recognize(frame, region)
+                val reading = rec.recognize(frame, region, turns)
                 val value = (reading["text"] as String).toDoubleOrNull()
                 val failed = reading["error"] != null || value == null || !value.isFinite() || (reading["confidence"] as Number).toDouble() < low
-                readings.add(if (snapshot && failed) reading + (frame.snapshot(region)?.let { mapOf("snapshot" to it) } ?: emptyMap()) else reading)
+                readings.add(if (snapshot && failed) reading + (frame.snapshot(region, turns)?.let { mapOf("snapshot" to it) } ?: emptyMap()) else reading)
             }
             runOnUiThread {
                 probeRunning = false
@@ -383,10 +364,12 @@ class MainActivity : FlutterActivity() {
         ae = null
         provider?.unbindAll()
         boundCamera = null
+        val oldRaster = raster
+        raster = null
         texture?.release()
         texture = null
-        previewUseCase = null
-        previewCrop = null
+        if (oldRaster != null) analysisWorker.execute { oldRaster.close() }
+        analysisUseCase = null
         frameMs = 0
         latest = null
         if (resetDetail) detail = "相机已关闭"

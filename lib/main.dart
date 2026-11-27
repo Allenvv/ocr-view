@@ -553,11 +553,17 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     if (input == null || !validRois(rois)) {
       throw StateError('请至少配置一个合法且设备编号不重复的 ROI');
     }
-    final state = await input.state();
+    var state = await input.state();
+    if (canTuneToStart(state)) {
+      final roi = rois[selected >= 0 && selected < rois.length ? selected : 0];
+      state = await input.tune(roi);
+      await store.log('action', state.description, id);
+    }
     camera = state;
     if (!config.valid || !state.allows(rois, config.period)) {
       throw StateError(
         [
+          state.description,
           ...state.blockers(rois, config.period),
           if (!config.valid) '系统采样设置无效。',
         ].join(' '),
@@ -651,9 +657,17 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
   }
 
   Future<void> saveTemplate() async {
-    if (!validRois(rois)) throw StateError('请先绘制合法 ROI');
+    if (!validRois(rois) || camera?.texture == null) {
+      throw StateError('请在真实取景中绘制合法 ROI');
+    }
     final result = await form(context, '保存 ROI 模板', ['模板名称'], ['']);
-    if (result != null) await store.saveTemplate(result.single, rois);
+    if (result != null) {
+      await store.saveTemplate(
+        result.single,
+        rois,
+        viewportVersion: camera?.data['viewportVersion'] as int? ?? 1,
+      );
+    }
     if (mounted && result != null) notice(context, '模板已保存');
   }
 
@@ -679,7 +693,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       if (camera?.texture == null) throw StateError('请先连接真实相机，再加载和核对模板');
       final next = Store.decodeRois(row['rois']);
       if (!validRois(next)) throw StateError('模板无效：每批最多 8 个 ROI，坐标须合法且编号不得重复');
-      if (row['viewport_version'] != 1 &&
+      if (row['viewport_version'] != (camera?.data['viewportVersion'] ?? 1) &&
           !await confirm(
             context,
             '核对旧模板',
@@ -826,7 +840,9 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                   child: Text('• $reason'),
                 ),
               ),
-            if (!demo && camera?.data['validated'] != true)
+            if (!demo &&
+                !hardwareValidation &&
+                camera?.data['validated'] != true)
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: Text(
@@ -917,19 +933,29 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     }
   }
 
+  bool canTuneToStart(CameraState? state) =>
+      config.valid &&
+      validRois(rois) &&
+      state?.tuneSupported == true &&
+      state?.data['ready'] != true &&
+      state!.withReady.allows(rois, config.period);
+
   Widget editor() => LayoutBuilder(
     builder: (context, box) {
       final wide = box.maxWidth >= 600 && box.maxWidth > box.maxHeight;
       final blockers = startBlockers;
       final available = blockers.isEmpty;
+      final needsTune = canTuneToStart(camera);
       final shortStatus = demo
           ? '离线演示 · 合成读数'
           : camera == null
           ? '正在连接相机…'
-          : camera?.data['validated'] != true
-          ? '真实采集未就绪 · 缺少验收'
           : available
           ? '真实采集已就绪'
+          : needsTune
+          ? '开始时将锁定对焦和曝光'
+          : !hardwareValidation && camera?.data['validated'] != true
+          ? '真实采集未就绪 · 缺少验收'
           : '真实采集未就绪 · 查看原因';
       final hint = '拖画新框 · 框内移动 · 拖四角调整';
       Widget panel(Widget child) => Material(
@@ -1022,7 +1048,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       final startButton = FilledButton.icon(
         onPressed: busy
             ? null
-            : available
+            : available || needsTune
             ? () => run(start)
             : showCaptureStatus,
         style: FilledButton.styleFrom(
@@ -1030,10 +1056,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           disabledBackgroundColor: LabStyle.canvas,
         ),
         icon: Icon(
-          available ? Icons.play_arrow_rounded : Icons.info_outline,
+          available || needsTune
+              ? Icons.play_arrow_rounded
+              : Icons.info_outline,
           size: 19,
         ),
-        label: Text(available ? (demo ? '开始演示' : '开始采集') : '查看启动条件'),
+        label: Text(available || needsTune ? '开始采集' : '查看启动条件'),
       );
       return ColoredBox(
         color: LabStyle.canvas,

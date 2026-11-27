@@ -214,13 +214,17 @@ class Store extends GeneratedDatabase {
           .toList();
   Future<List<DataRowMap>> templates() =>
       query('SELECT * FROM templates ORDER BY saved DESC');
-  Future<void> saveTemplate(String name, List<Roi> rois) async {
+  Future<void> saveTemplate(
+    String name,
+    List<Roi> rois, {
+    int viewportVersion = 1,
+  }) async {
     if (!validRois(rois) || name.trim().isEmpty) {
       throw ArgumentError('模板名称或 ROI 无效');
     }
     await customStatement(
-      'INSERT INTO templates(name,rois,saved,viewport_version) VALUES(?,?,?,1) ON CONFLICT(name) DO UPDATE SET rois=excluded.rois,saved=excluded.saved,viewport_version=1',
-      [name.trim(), encodeRois(rois), now],
+      'INSERT INTO templates(name,rois,saved,viewport_version) VALUES(?,?,?,?) ON CONFLICT(name) DO UPDATE SET rois=excluded.rois,saved=excluded.saved,viewport_version=excluded.viewport_version',
+      [name.trim(), encodeRois(rois), now, viewportVersion],
     );
   }
 

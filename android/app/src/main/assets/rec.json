@@ -1,0 +1,17 @@
+{
+  "version": "en_PP-OCRv5_mobile_rec@3fafbc3b",
+  "sourceRevision": "3fafbc3b5dcf93dd72add9f48368be8a3a2cd33b",
+  "width": 320,
+  "height": 48,
+  "channels": 3,
+  "input": "BGR",
+  "resize": "aspect-right-pad",
+  "mean": 0.5,
+  "scale": 0.5,
+  "decoder": "ctc-probabilities",
+  "blankIndex": 0,
+  "classCount": 438,
+  "sha256": "b5f833dfc5d0eb71da397b4efa06ebeee9b431b690a47d6af40d77d8eabc557f",
+  "dictionarySha256": "2c9c0a45995b62e5b3b41cc73671720558a10e416c6592611c77c8c7c92a1361",
+  "upstreamConfigSha256": "27e91d0582f40168aa218303c76e184bc78fa7a5d105aad0cfbad8458b441067"
+}

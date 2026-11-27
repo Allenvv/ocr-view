@@ -1,0 +1,4 @@
+# These files are byte-for-byte pinned by the Android model manifest.
+/android/app/src/main/assets/rec.onnx binary
+/android/app/src/main/assets/rec.dict.json -text
+/android/app/src/main/assets/rec-upstream.yml -text

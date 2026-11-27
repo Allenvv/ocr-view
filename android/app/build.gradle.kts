@@ -1,3 +1,6 @@
+import java.security.MessageDigest
+import groovy.json.JsonSlurper
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
@@ -49,3 +52,20 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.4.2")
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.22.0")
 }
+
+// Catch an incomplete package before Android can install a model-less APK.
+val verifyBundledRec by tasks.registering {
+    val modelAssets = layout.projectDirectory.dir("src/main/assets")
+    val names = listOf("rec.onnx", "rec.json", "rec.dict.json", "rec-upstream.yml", "rec-LICENSE.txt")
+    inputs.files(names.map { modelAssets.file(it) })
+    doLast {
+        val manifest = JsonSlurper().parse(modelAssets.file("rec.json").asFile) as Map<*, *>
+        for ((name, key) in mapOf("rec.onnx" to "sha256", "rec.dict.json" to "dictionarySha256", "rec-upstream.yml" to "upstreamConfigSha256")) {
+            val file = modelAssets.file(name).asFile
+            val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
+            check(actual == manifest[key]) { "Bundled REC asset $name failed SHA-256 validation" }
+        }
+        check(modelAssets.file("rec-LICENSE.txt").asFile.length() > 0) { "Missing PaddleOCR model license" }
+    }
+}
+tasks.named("preBuild") { dependsOn(verifyBundledRec) }

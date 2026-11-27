@@ -14,6 +14,7 @@ class CameraState {
   double get aspect =>
       (data['width'] as num? ?? 16) / (data['height'] as num? ?? 9);
   String get description => data['message'] as String? ?? '无相机信息';
+  CameraState get withReady => CameraState({...data, 'ready': true});
   bool get probeSupported => data['probeSupported'] == true;
   bool get tuneSupported => data['tuneSupported'] == true;
   int get turns => data['turns'] as int? ?? 0;

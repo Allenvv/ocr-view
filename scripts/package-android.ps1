@@ -3,7 +3,8 @@ param(
     [string]$SdkRoot = $(if ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { $env:ANDROID_HOME }),
     [string]$BuildToolsVersion = '35.0.0',
     [string]$GradleInitScript,
-    [switch]$SkipLintVitalRelease
+    [switch]$SkipLintVitalRelease,
+    [switch]$HardwareValidation
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,19 +32,26 @@ try {
         Push-Location android
         try {
             $gradleArgs = @('--init-script', $init, '--console=plain', '--max-workers=4', '-Pkotlin.incremental=false', '-Pkotlin.compiler.execution.strategy=in-process', '-Ptarget-platform=android-arm,android-arm64,android-x64', '-Ptarget=lib/main.dart', '-Pbase-application-name=android.app.Application', '-Pdart-obfuscation=false', '-Ptrack-widget-creation=true', '-Ptree-shake-icons=true', ':app:assembleRelease')
+            if ($HardwareValidation) {
+                $define = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes('PM25_HARDWARE_VALIDATION=true'))
+                $gradleArgs += "-Pdart-defines=$define"
+            }
             if ($SkipLintVitalRelease) { $gradleArgs += @('-x', ':app:lintVitalRelease') }
             Invoke-Checked '.\gradlew.bat' $gradleArgs
         } finally { Pop-Location }
         $apk = 'build/app/outputs/apk/release/app-release.apk'
     } else {
-        Invoke-Checked $Flutter @('build', 'apk', '--release')
+        $flutterArgs = @('build', 'apk', '--release')
+        if ($HardwareValidation) { $flutterArgs += '--dart-define=PM25_HARDWARE_VALIDATION=true' }
+        Invoke-Checked $Flutter $flutterArgs
         $apk = 'build/app/outputs/flutter-apk/app-release.apk'
     }
     Invoke-Checked $signer @('verify','--verbose',$apk)
     $package = & $aapt dump badging $apk | Select-String '^package:'
     if ($LASTEXITCODE -ne 0 -or "$package" -notmatch "versionCode='$versionCode' versionName='$([regex]::Escape($versionName))'") { throw "APK version mismatch: $package" }
     New-Item -ItemType Directory -Force artifacts | Out-Null
-    $output = Join-Path $root "artifacts/PM25-Capture-v$versionName.apk"
+    $suffix = if ($HardwareValidation) { '-hardware-validation' } else { '' }
+    $output = Join-Path $root "artifacts/PM25-Capture-v$versionName$suffix.apk"
     Copy-Item -LiteralPath $apk -Destination $output
     Get-FileHash -LiteralPath $output -Algorithm SHA256
 } finally { Pop-Location }
