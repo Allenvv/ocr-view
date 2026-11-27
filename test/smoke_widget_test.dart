@@ -80,7 +80,7 @@ void main() {
       expect(find.text('开始采集'), findsNothing);
       await tester.tap(find.text('查看启动条件'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('未安装可用的 REC'), findsOneWidget);
+      expect(find.textContaining('内置离线识别模型不可用'), findsOneWidget);
       expect(find.textContaining('AF/AE 锁定和正式识别链路'), findsOneWidget);
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();

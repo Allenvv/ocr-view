@@ -37,11 +37,39 @@ void main() {
         'roiLimit': 5,
       });
       expect(native.allows(rois, 1000), isTrue);
-      expect(native.allows(List.filled(6, rois.single), 1000), isFalse);
+      expect(
+        native.allows(List.filled(6, rois.single), 1000),
+        hardwareValidation,
+      );
       final unvalidated = CameraState({...demo.data, 'validated': false});
       expect(unvalidated.allows(rois, 1000), isFalse);
     },
   );
+
+  test('bundled model initialization blocks capture until ready', () {
+    const rois = [Roi('DEV01', .1, .1, .4, .4)];
+    const loading = CameraState({
+      'modelLoading': true,
+      'modelAvailable': false,
+      'validated': true,
+      'ready': true,
+      'framesReady': true,
+      'storageReady': true,
+      'periods': [1000],
+    });
+    expect(loading.blockers(rois, 1000), ['正在加载内置离线识别模型…']);
+    final failed = CameraState({
+      ...loading.data,
+      'modelLoading': false,
+      'modelProblem': 'UnsatisfiedLinkError',
+    });
+    expect(
+      failed.blockers(rois, 1000).single,
+      contains('UnsatisfiedLinkError'),
+    );
+    final ready = CameraState({...loading.data, 'modelAvailable': true});
+    expect(ready.allows(rois, 1000), isTrue);
+  });
 
   test('production profile is approved for an exact ROI count and period', () {
     final camera = const CameraState({
@@ -57,8 +85,8 @@ void main() {
         List.generate(count, (i) => Roi('DEV$i', .1, .1, .4, .4));
     expect(camera.allows(rois(3), 1000), isTrue);
     expect(camera.allows(rois(8), 2000), isTrue);
-    expect(camera.allows(rois(8), 1000), isFalse);
-    expect(camera.allows(rois(1), 1000), isFalse);
+    expect(camera.allows(rois(8), 1000), hardwareValidation);
+    expect(camera.allows(rois(1), 1000), hardwareValidation);
   });
 
   test(

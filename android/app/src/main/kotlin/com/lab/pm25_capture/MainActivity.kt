@@ -15,6 +15,7 @@ import androidx.camera.camera2.interop.Camera2Interop
 import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import org.json.JSONArray
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -81,17 +82,37 @@ class MainActivity : FlutterActivity() {
     private var detail = "尚未打开后置相机"
     @Volatile private var generation = 0
     @Volatile private var latest: LumaFrame? = null
-    @Volatile private var modelAvailable = false
+    @Volatile private var modelLoading = false
     @Volatile private var modelProblem: String? = null
-    private var model: RecModel? = null
+    @Volatile private var model: RecModel? = null
+    private val modelAvailable get() = model != null
     private var probeRunning = false
+
+    // The home screen and historical records do not need to initialize native OCR.
+    private fun loadModelForCapture() {
+        if (modelLoading || modelAvailable) return
+        modelProblem = null
+        modelLoading = true
+        worker.execute {
+            try {
+                model = RecModel(assets)
+            } catch (e: Exception) {
+                reportModelLoadFailure(e)
+            } catch (e: LinkageError) {
+                reportModelLoadFailure(e)
+            } finally {
+                modelLoading = false
+            }
+        }
+    }
+
+    private fun reportModelLoadFailure(error: Throwable) {
+        Log.e("PM25-REC", "Bundled offline model initialization failed", error)
+        modelProblem = "${error.javaClass.simpleName}：${error.message ?: "初始化失败"}"
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        worker.execute {
-            try { model = RecModel(assets); modelAvailable = true }
-            catch (e: Exception) { modelProblem = e.message }
-        }
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "pm25_capture/camera")
         channel?.setMethodCallHandler { call, result ->
             when (call.method) {
@@ -142,7 +163,7 @@ class MainActivity : FlutterActivity() {
         return mapOf("textureId" to if (frame != null) texture?.id() else null,
             "width" to if (swap) canonicalHeight else canonicalWidth, "height" to if (swap) canonicalWidth else canonicalHeight,
             "turns" to turns, "bufferTurns" to 0, "viewportVersion" to 2,
-            "modelAvailable" to modelAvailable, "modelProblem" to modelProblem,
+            "modelAvailable" to modelAvailable, "modelLoading" to modelLoading, "modelProblem" to modelProblem,
             "modelVersion" to model?.version, "modelSha256" to model?.sha256, "dictionarySha256" to model?.dictionarySha256, "runtimeVersion" to "1.22.0",
             "sessionId" to generation, "afState" to af, "aeState" to ae, "locked" to locked,
             "cameraId" to cameraInfo?.let { Camera2CameraInfo.from(it).cameraId },
@@ -164,6 +185,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun openCamera(registry: TextureRegistry) {
+        loadModelForCapture()
         val token = ++generation
         val future = ProcessCameraProvider.getInstance(this)
         val main = ContextCompat.getMainExecutor(this)

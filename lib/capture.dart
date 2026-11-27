@@ -33,7 +33,9 @@ class CameraState {
               data['framesReady'] != true))
         '离线演示尚未准备好。',
       if (!isDemo && data['modelAvailable'] != true)
-        '未安装可用的 REC 识别模型。 ${data['modelProblem'] ?? ''}',
+        data['modelLoading'] == true
+            ? '正在加载内置离线识别模型…'
+            : '内置离线识别模型不可用。 ${data['modelProblem'] ?? ''}',
       if (!isDemo && !validation && data['validated'] != true)
         '当前设备及相机采样档位未验收。',
       if (!isDemo && data['ready'] != true)
