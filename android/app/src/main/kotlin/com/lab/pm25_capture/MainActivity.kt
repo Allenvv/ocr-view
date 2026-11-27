@@ -88,7 +88,13 @@ class MainActivity : FlutterActivity() {
 
     private fun report(): Map<String, Any?> {
         val storage = runCatching { StatFs(filesDir.absolutePath).availableBytes >= 100L * 1024 * 1024 }.getOrDefault(false)
-        val turns = (4 - displayRotation()) % 4
+        // The analysis/ROI coordinate system stays locked to rotation 0.
+        // The preview texture and the editable ROI share the same display delta.
+        val display = displayRotation()
+        val cameraInfo = boundCamera?.cameraInfo
+        val turns = if (cameraInfo == null) 0 else Math.floorMod(
+            cameraInfo.getSensorRotationDegrees(display) -
+                cameraInfo.getSensorRotationDegrees(Surface.ROTATION_0), 360) / 90
         val swap = (turns + bufferTurns) % 2 != 0
         return mapOf("textureId" to if (previewCrop != null) texture?.id() else null,
             "width" to if (swap) cropHeight else cropWidth, "height" to if (swap) cropWidth else cropHeight,
@@ -265,6 +271,3 @@ class MainActivity : FlutterActivity() {
         super.onDestroy()
     }
 }
-
-
-

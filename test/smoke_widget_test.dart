@@ -77,11 +77,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('测试项目'));
       await tester.pumpAndSettle();
-      final native = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '开始采集'),
-      );
-      expect(native.onPressed, isNull);
-      await tester.tap(find.text('真实采集未就绪 · 缺少验收'));
+      expect(find.text('开始采集'), findsNothing);
+      await tester.tap(find.text('查看启动条件'));
       await tester.pumpAndSettle();
       expect(find.textContaining('未安装可用的 REC'), findsOneWidget);
       expect(find.textContaining('AF/AE 锁定和正式识别链路'), findsOneWidget);
@@ -89,7 +86,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('进入离线演示'));
       await tester.pumpAndSettle();
-      expect(find.textContaining('所有读数均为合成数据'), findsOneWidget);
+      expect(find.text('离线演示 · 合成读数'), findsOneWidget);
       await tester.ensureVisible(find.text('使用演示 ROI'));
       await tester.tap(find.text('使用演示 ROI'));
       await tester.pumpAndSettle();

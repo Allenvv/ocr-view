@@ -2,16 +2,16 @@ import 'package:flutter/material.dart';
 
 /// Shared light interface tokens. Camera imagery and data-status colors are separate roles.
 abstract final class LabStyle {
-  static const canvas = Color(0xfff2f4f8);
+  static const canvas = Color(0xfff5f7fa);
   static const surface = Colors.white;
-  static const ink = Color(0xff151c2b);
-  static const secondary = Color(0xff586479);
-  static const line = Color(0xffe2e7ef);
-  static const blue = Color(0xff2454d6);
-  static const blueWash = Color(0xffeaf0ff);
-  static const violet = Color(0xff6550ac);
-  static const violetWash = Color(0xfff0ecfb);
-  static const amber = Color(0xff87520c);
+  static const ink = Color(0xff1d2433);
+  static const secondary = Color(0xff667085);
+  static const line = Color(0xffe5e9f0);
+  static const primary = Color(0xff087f78);
+  static const primaryWash = Color(0xffe4f4f2);
+  static const accentBlue = Color(0xff536b9d);
+  static const accentBlueWash = Color(0xffedf2fa);
+  static const amber = Color(0xff895211);
   static const amberWash = Color(0xfffff1d8);
   static const red = Color(0xffa83147);
   static const redWash = Color(0xffffebee);
@@ -20,9 +20,9 @@ abstract final class LabStyle {
   static const radius = 22.0;
   static const gap = 16.0;
   static const chartSeries = [
-    blue,
-    Color(0xff0a887a),
-    violet,
+    primary,
+    accentBlue,
+    Color(0xff7856a5),
     Color(0xffb25d18),
     red,
     Color(0xff577927),
@@ -34,7 +34,7 @@ abstract final class LabStyle {
     fontSize: 11,
     letterSpacing: 1.45,
     fontWeight: FontWeight.w700,
-    color: blue,
+    color: primary,
   );
 
   static ThemeData theme({String? fontFamily}) {
@@ -44,12 +44,12 @@ abstract final class LabStyle {
       visualDensity: VisualDensity.standard,
       scaffoldBackgroundColor: canvas,
       colorScheme: const ColorScheme.light(
-        primary: blue,
+        primary: primary,
         onPrimary: Colors.white,
-        primaryContainer: blueWash,
+        primaryContainer: primaryWash,
         onPrimaryContainer: ink,
-        secondary: violet,
-        secondaryContainer: violetWash,
+        secondary: accentBlue,
+        secondaryContainer: accentBlueWash,
         onSecondaryContainer: ink,
         tertiary: green,
         error: red,
@@ -61,6 +61,32 @@ abstract final class LabStyle {
         outlineVariant: line,
       ),
       dividerColor: line,
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: canvas,
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 12,
+        ),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide.none,
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: const BorderSide(color: primary, width: 1.5),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          minimumSize: const Size(44, 44),
+          textStyle: TextStyle(
+            fontFamily: fontFamily,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(backgroundColor: surface),
       appBarTheme: const AppBarTheme(
         backgroundColor: canvas,
         foregroundColor: ink,
@@ -165,8 +191,8 @@ class LabBadge extends StatelessWidget {
   const LabBadge(
     this.label, {
     super.key,
-    this.color = LabStyle.blue,
-    this.background = LabStyle.blueWash,
+    this.color = LabStyle.primary,
+    this.background = LabStyle.primaryWash,
     this.icon,
   });
   final String label;

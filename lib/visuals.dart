@@ -255,7 +255,7 @@ class _InteractiveCanvasState extends State<_InteractiveCanvas> {
             )
           else
             ColoredBox(
-              color: LabStyle.blueWash,
+              color: LabStyle.primaryWash,
               child: Center(
                 child: Text(
                   '等待相机预览',
@@ -344,7 +344,7 @@ class _DemoPreview extends CustomPainter {
       canvas.drawCircle(
         Offset(w * center, h * .63),
         4,
-        Paint()..color = LabStyle.violet,
+        Paint()..color = LabStyle.accentBlue,
       );
     }
   }
@@ -370,7 +370,7 @@ class _RoiPaint extends CustomPainter {
         roi.r * size.width,
         roi.b * size.height,
       );
-      final color = active ? LabStyle.blue : LabStyle.violet;
+      final color = active ? LabStyle.primary : LabStyle.accentBlue;
       canvas.drawRect(rect, Paint()..color = color.withValues(alpha: .09));
       canvas.drawRect(
         rect,
@@ -425,6 +425,7 @@ class TrendChart extends StatelessWidget {
   final List<String> devices;
   final int from, to;
   final ValueChanged<DataRowMap> onRow;
+  final bool expand;
   const TrendChart({
     super.key,
     required this.data,
@@ -432,18 +433,60 @@ class TrendChart extends StatelessWidget {
     required this.from,
     required this.to,
     required this.onRow,
+    this.expand = false,
   });
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      Align(
-        alignment: Alignment.centerLeft,
-        child: Wrap(
-          spacing: 8,
-          runSpacing: 6,
-          children: [
-            for (var i = 0; i < devices.length; i++)
-              DecoratedBox(
+  Widget build(BuildContext context) {
+    final hasValues = data.any((row) => row['value'] is num);
+    final plot = hasValues
+        ? LayoutBuilder(
+            builder: (context, box) {
+              final painter = _TrendPainter(
+                data,
+                devices,
+                from,
+                to,
+                Theme.of(context).textTheme.bodySmall?.fontFamily,
+              );
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (e) {
+                  final size = Size(box.maxWidth, box.maxHeight);
+                  if (size.width <= 54 || size.height <= 39) return;
+                  DataRowMap? pick;
+                  var distance = 22.0;
+                  for (final row in data) {
+                    if (row['value'] == null) continue;
+                    final d =
+                        (painter.point(row, size) - e.localPosition).distance;
+                    if (d < distance) {
+                      distance = d;
+                      pick = row;
+                    }
+                  }
+                  if (pick != null) onRow(pick);
+                },
+                child: CustomPaint(painter: painter, size: Size.infinite),
+              );
+            },
+          )
+        : const Center(
+            child: Text(
+              '当前时段暂无有效读数',
+              style: TextStyle(color: LabStyle.secondary),
+            ),
+          );
+    return Column(
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            height: 30,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: devices.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, i) => DecoratedBox(
                 decoration: BoxDecoration(
                   color: LabStyle.canvas,
                   borderRadius: BorderRadius.circular(8),
@@ -471,56 +514,17 @@ class TrendChart extends StatelessWidget {
                   ),
                 ),
               ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 12),
-      if (!data.any((r) => r['value'] is num))
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 48),
-          child: Text(
-            '当前时段暂无有效读数',
-            style: TextStyle(color: LabStyle.secondary),
-          ),
-        )
-      else
-        SizedBox(
-          height: 206,
-          child: LayoutBuilder(
-            builder: (context, box) {
-              final painter = _TrendPainter(
-                data,
-                devices,
-                from,
-                to,
-                Theme.of(context).textTheme.bodySmall?.fontFamily,
-              );
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (e) {
-                  final w = box.maxWidth, h = box.maxHeight;
-                  if (w <= 50) return;
-                  final size = Size(w, h);
-                  DataRowMap? pick;
-                  var distance = 22.0;
-                  for (final row in data) {
-                    if (row['value'] == null) continue;
-                    final d =
-                        (painter.point(row, size) - e.localPosition).distance;
-                    if (d < distance) {
-                      distance = d;
-                      pick = row;
-                    }
-                  }
-                  if (pick != null) onRow(pick);
-                },
-                child: CustomPaint(painter: painter, size: Size.infinite),
-              );
-            },
+            ),
           ),
         ),
-    ],
-  );
+        const SizedBox(height: 12),
+        if (expand)
+          Expanded(child: plot)
+        else
+          SizedBox(height: 220, child: plot),
+      ],
+    );
+  }
 }
 
 class _TrendPainter extends CustomPainter {
@@ -543,7 +547,7 @@ class _TrendPainter extends CustomPainter {
   );
   @override
   void paint(Canvas canvas, Size s) {
-    if (s.width <= 54) return;
+    if (s.width <= 54 || s.height <= 39) return;
     final p = Paint()
       ..color = LabStyle.line
       ..strokeWidth = 1;
@@ -584,6 +588,10 @@ class _TrendPainter extends CustomPainter {
         end: true,
       );
     }
+    final byDevice = <Object?, List<DataRowMap>>{};
+    for (final row in data) {
+      (byDevice[row['device']] ??= []).add(row);
+    }
     canvas.save();
     canvas.clipRect(Rect.fromLTRB(42, 8, s.width - 7, s.height - 24));
     for (var i = 0; i < devices.length; i++) {
@@ -592,7 +600,7 @@ class _TrendPainter extends CustomPainter {
         ..strokeWidth = 2.25
         ..strokeCap = StrokeCap.round;
       Offset? last;
-      for (final row in data.where((row) => row['device'] == devices[i])) {
+      for (final row in byDevice[devices[i]] ?? const <DataRowMap>[]) {
         if (row['value'] == null) {
           last = null;
           continue;

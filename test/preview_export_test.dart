@@ -111,8 +111,11 @@ void main() {
           final bytes = (await image.toByteData(
             format: ui.ImageByteFormat.png,
           ))!;
+          final output = Directory(
+            Platform.environment['PM25_PREVIEW_DIR'] ?? 'artifacts',
+          )..createSync(recursive: true);
           File(
-            'artifacts/$name.png',
+            '${output.path}/$name.png',
           ).writeAsBytesSync(bytes.buffer.asUint8List());
           image.dispose();
         });
@@ -149,6 +152,15 @@ void main() {
       await save('PM25-v0.3.0-monitor');
       expect(find.text('浓度趋势'), findsOneWidget);
       expect(find.text('52'), findsOneWidget);
+      await tester.tap(find.byTooltip('全屏查看趋势'));
+      await save('PM25-fullscreen-trend');
+      expect(find.byTooltip('退出全屏'), findsOneWidget);
+      expect(find.text('DEV01'), findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await tester.pumpAndSettle();
+      expect(find.text('52'), findsOneWidget);
+      await tester.ensureVisible(find.text('记录表'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('记录表'));
       await tester.pumpAndSettle();
       expect(find.text('浓度趋势'), findsNothing);

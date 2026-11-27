@@ -46,10 +46,7 @@ Widget field(TextEditingController c, String title, {bool numeric = false}) =>
         keyboardType: numeric
             ? const TextInputType.numberWithOptions(decimal: true)
             : null,
-        decoration: InputDecoration(
-          labelText: title,
-          border: const OutlineInputBorder(),
-        ),
+        decoration: InputDecoration(labelText: title),
       ),
     );
 Future<List<String>?> form(
@@ -185,7 +182,7 @@ class _HomeState extends State<Home> {
     appBar: AppBar(
       title: const Row(
         children: [
-          Icon(Icons.air_rounded, color: LabStyle.blue, size: 23),
+          Icon(Icons.air_rounded, color: LabStyle.primary, size: 23),
           SizedBox(width: 8),
           Flexible(
             child: Text(
@@ -297,14 +294,14 @@ class _HomeState extends State<Home> {
                         width: 40,
                         height: 40,
                         decoration: BoxDecoration(
-                          color: LabStyle.blueWash,
+                          color: LabStyle.primaryWash,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: Icon(
                           row['status'] == 2
                               ? Icons.history_rounded
                               : Icons.layers_outlined,
-                          color: LabStyle.blue,
+                          color: LabStyle.primary,
                           size: 21,
                         ),
                       ),
@@ -371,43 +368,25 @@ class LabOverview extends StatelessWidget {
   const LabOverview({super.key});
   @override
   Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      gradient: const LinearGradient(
-        colors: [Color(0xffe5edff), Color(0xfff3effb)],
-      ),
-      borderRadius: BorderRadius.circular(LabStyle.radius),
+    decoration: const BoxDecoration(
+      border: Border(left: BorderSide(color: LabStyle.line, width: 2)),
     ),
-    child: Stack(
-      children: [
-        const Positioned(
-          right: 20,
-          top: 15,
-          child: Icon(Icons.air_rounded, size: 74, color: Color(0x186550ac)),
-        ),
-        Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const LabBadge(
-                '应用说明',
-                color: LabStyle.violet,
-                background: Color(0xeaffffff),
-                icon: Icons.info_outline_rounded,
-              ),
-              const SizedBox(height: 12),
-              Text('实验室 · 本地采集', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 5),
-              Text(
-                '框选仪器屏幕，查看与复核读数。数据仅保存在本机，可导出 CSV。',
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyMedium?.copyWith(color: LabStyle.secondary),
-              ),
-            ],
+    child: Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: LabStyle.gap,
+        vertical: 4,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('关于本地采集', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            '框选仪器屏幕，查看与复核读数。数据仅保存在本机，可导出 CSV。',
+            style: Theme.of(context).textTheme.bodySmall,
           ),
-        ),
-      ],
+        ],
+      ),
     ),
   );
 }
@@ -436,7 +415,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
   DataRowMap stats = {};
   int selected = -1, page = 0, from = 0, to = 1, zoom = 1, back = 0;
   String filter = 'all';
-  bool busy = false, table = false, leaving = false;
+  bool busy = false, table = false, leaving = false, trendFullscreen = false;
   bool get demo =>
       source?.demo == true ||
       (jsonDecode(batch['config'] as String) as Map)['mode'] == 'demo';
@@ -807,6 +786,16 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c), child: const Text('关闭')),
+        if (!demo && startBlockers.isNotEmpty)
+          FilledButton(
+            onPressed: busy
+                ? null
+                : () {
+                    Navigator.pop(c);
+                    unawaited(run(() => useCamera(true)));
+                  },
+            child: const Text('进入离线演示'),
+          ),
       ],
     ),
   );
@@ -888,13 +877,11 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
 
   Widget editor() => LayoutBuilder(
     builder: (context, box) {
-      final wide =
-          MediaQuery.orientationOf(context) == Orientation.landscape &&
-          box.maxWidth >= 650;
+      final wide = box.maxWidth >= 600 && box.maxWidth > box.maxHeight;
       final blockers = startBlockers;
       final available = blockers.isEmpty;
       final shortStatus = demo
-          ? '所有读数均为合成数据'
+          ? '离线演示 · 合成读数'
           : camera == null
           ? '正在连接相机…'
           : camera?.data['validated'] != true
@@ -904,7 +891,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           : '真实采集未就绪 · 查看原因';
       final hint = '拖画新框 · 框内移动 · 拖四角调整';
       Widget panel(Widget child) => Material(
-        color: const Color(0xf5ffffff),
+        color: const Color(0xeefafcfc),
         borderRadius: BorderRadius.circular(16),
         child: child,
       );
@@ -932,7 +919,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           IconButton(
             tooltip: '加载模板',
             color: LabStyle.ink,
-            icon: const Icon(Icons.folder_open),
+            icon: const Icon(Icons.folder_open_rounded),
             onPressed: busy ? null : () => run(loadTemplate),
           ),
           IconButton(
@@ -992,17 +979,24 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       );
       final modeButton = TextButton(
         onPressed: busy ? null : () => run(() => useCamera(!demo)),
-        style: TextButton.styleFrom(foregroundColor: LabStyle.blue),
+        style: TextButton.styleFrom(foregroundColor: LabStyle.primary),
         child: Text(demo ? '返回真实相机' : '进入离线演示'),
       );
       final startButton = FilledButton.icon(
-        onPressed: busy || !available ? null : () => run(start),
+        onPressed: busy
+            ? null
+            : available
+            ? () => run(start)
+            : showCaptureStatus,
         style: FilledButton.styleFrom(
           disabledForegroundColor: LabStyle.secondary,
           disabledBackgroundColor: LabStyle.canvas,
         ),
-        icon: const Icon(Icons.play_arrow, size: 19),
-        label: Text(demo ? '开始演示' : '开始采集'),
+        icon: Icon(
+          available ? Icons.play_arrow_rounded : Icons.info_outline,
+          size: 19,
+        ),
+        label: Text(available ? (demo ? '开始演示' : '开始采集') : '查看启动条件'),
       );
       final offerSample = demo && rois.isEmpty;
       final sampleButton = TextButton(
@@ -1015,7 +1009,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                 ];
                 selected = 0;
               }),
-        style: TextButton.styleFrom(foregroundColor: LabStyle.blue),
+        style: TextButton.styleFrom(foregroundColor: LabStyle.primary),
         child: const Text('使用演示 ROI'),
       );
       return ColoredBox(
@@ -1028,7 +1022,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               selected: selected,
               texture: camera?.texture,
               aspect: demo || camera?.texture == null
-                  ? (wide ? 16 / 9 : 9 / 16)
+                  ? box.maxWidth / box.maxHeight
                   : camera!.aspect,
               turns: demo ? 0 : camera?.turns ?? 0,
               bufferTurns: camera?.bufferTurns ?? 0,
@@ -1048,25 +1042,26 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                     }),
             ),
             SafeArea(
-              top: false,
               child: Padding(
                 padding: const EdgeInsets.all(8),
                 child: Column(
                   children: [
-                    if (wide)
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [panel(statusButton), panel(toolbar)],
-                      )
-                    else
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [Flexible(child: panel(statusButton))],
-                      ),
+                    Row(
+                      children: [
+                        panel(BackButton(onPressed: exit)),
+                        const SizedBox(width: 6),
+                        Flexible(child: panel(statusButton)),
+                        if (wide) ...[const Spacer(), panel(toolbar)],
+                      ],
+                    ),
                     if (!wide)
                       Align(
                         alignment: Alignment.centerRight,
-                        child: panel(toolbar),
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          reverse: true,
+                          child: panel(toolbar),
+                        ),
                       ),
                     if (busy) const LinearProgressIndicator(),
                     const Spacer(),
@@ -1132,8 +1127,83 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     },
   );
 
+  Widget trendPlot({bool fullscreen = false}) => RepaintBoundary(
+    child: TrendChart(
+      data: trend,
+      devices: rois.map((r) => r.device).toList(),
+      from: from,
+      to: to,
+      expand: fullscreen,
+      onRow: (row) => run(() => editRecord(row)),
+    ),
+  );
+
+  Widget fullscreenTrend() => SafeArea(
+    top: false,
+    child: Padding(
+      padding: const EdgeInsets.all(LabStyle.gap),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(LabStyle.gap),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (demo) ...[
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: LabBadge(
+                    '离线演示 · 合成读数',
+                    color: LabStyle.amber,
+                    background: LabStyle.amberWash,
+                    icon: Icons.science_outlined,
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
+              Expanded(child: trendPlot(fullscreen: true)),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+
   Widget monitor() {
     final active = loop?.active ?? false;
+    final viewSelector = Align(
+      alignment: Alignment.centerLeft,
+      child: SegmentedButton<bool>(
+        segments: const [
+          ButtonSegment(
+            value: false,
+            label: Text('趋势图'),
+            icon: Icon(Icons.show_chart_rounded),
+          ),
+          ButtonSegment(
+            value: true,
+            label: Text('记录表'),
+            icon: Icon(Icons.table_rows_outlined),
+          ),
+        ],
+        selected: {table},
+        showSelectedIcon: false,
+        onSelectionChanged: (value) => setState(() => table = value.single),
+        style: ButtonStyle(
+          side: const WidgetStatePropertyAll(BorderSide(color: LabStyle.line)),
+          backgroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? LabStyle.primaryWash
+                : LabStyle.surface,
+          ),
+          foregroundColor: WidgetStateProperty.resolveWith(
+            (states) => states.contains(WidgetState.selected)
+                ? LabStyle.primary
+                : LabStyle.secondary,
+          ),
+        ),
+      ),
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -1151,12 +1221,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
             LabBadge(
               status == 1 ? (active ? '采集中' : '已暂停') : '已停止',
               color: active ? LabStyle.green : LabStyle.secondary,
-              background: active ? LabStyle.greenWash : LabStyle.blueWash,
+              background: active ? LabStyle.greenWash : LabStyle.primaryWash,
             ),
             LabBadge(
               '${config.period} ms / 次',
-              color: LabStyle.violet,
-              background: LabStyle.violetWash,
+              color: LabStyle.accentBlue,
+              background: LabStyle.accentBlueWash,
             ),
             if (demo)
               const LabBadge(
@@ -1173,6 +1243,89 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           style: Theme.of(context).textTheme.bodySmall,
         ),
         const SizedBox(height: 16),
+        if (status == 2) ...[viewSelector, const SizedBox(height: 12)],
+        if (status == 1 || !table)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '浓度趋势',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '全屏查看趋势',
+                        onPressed: () => setState(() => trendFullscreen = true),
+                        icon: const Icon(Icons.fullscreen_rounded),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'PM2.5 浓度 · µg/m³',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 12),
+                  if (status == 2)
+                    Wrap(
+                      spacing: 8,
+                      children: [
+                        IconButton(
+                          tooltip: '较早',
+                          onPressed: busy || zoom == 1
+                              ? null
+                              : () => run(() async {
+                                  back++;
+                                  await reload();
+                                }),
+                          icon: const Icon(Icons.arrow_back),
+                        ),
+                        IconButton(
+                          tooltip: '较晚',
+                          onPressed: busy || back == 0
+                              ? null
+                              : () => run(() async {
+                                  back--;
+                                  await reload();
+                                }),
+                          icon: const Icon(Icons.arrow_forward),
+                        ),
+                        IconButton(
+                          tooltip: '放大',
+                          onPressed: busy || zoom >= 32
+                              ? null
+                              : () => run(() async {
+                                  zoom *= 2;
+                                  back *= 2;
+                                  await reload();
+                                }),
+                          icon: const Icon(Icons.zoom_in),
+                        ),
+                        IconButton(
+                          tooltip: '缩小',
+                          onPressed: busy || zoom <= 1
+                              ? null
+                              : () => run(() async {
+                                  zoom ~/= 2;
+                                  back ~/= 2;
+                                  await reload();
+                                }),
+                          icon: const Icon(Icons.zoom_out),
+                        ),
+                      ],
+                    ),
+                  trendPlot(),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 18),
         LayoutBuilder(
           builder: (context, box) {
             final count = box.maxWidth >= 520 ? 4 : 2;
@@ -1182,13 +1335,13 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               runSpacing: 8,
               children: [
                 for (final (label, value, color) in [
-                  ('采集记录', '${stats['total'] ?? 0}', LabStyle.blue),
+                  ('采集记录', '${stats['total'] ?? 0}', LabStyle.primary),
                   ('识别失败', '${stats['failed'] ?? 0}', LabStyle.amber),
                   ('丢帧', '${stats['dropped'] ?? 0}', LabStyle.secondary),
                   (
                     'P95 耗时',
                     '${percentile95(loop?.durations ?? []) ?? '—'} ms',
-                    LabStyle.violet,
+                    LabStyle.accentBlue,
                   ),
                 ])
                   SizedBox(
@@ -1287,117 +1440,8 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
         if (status == 1)
           Wrap(spacing: 8, children: [for (final roi in rois) deviceCard(roi)]),
         const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerLeft,
-          child: SegmentedButton<bool>(
-            segments: const [
-              ButtonSegment(
-                value: false,
-                label: Text('趋势图'),
-                icon: Icon(Icons.show_chart_rounded),
-              ),
-              ButtonSegment(
-                value: true,
-                label: Text('记录表'),
-                icon: Icon(Icons.table_rows_outlined),
-              ),
-            ],
-            selected: {table},
-            showSelectedIcon: false,
-            onSelectionChanged: (value) => setState(() => table = value.single),
-            style: ButtonStyle(
-              side: const WidgetStatePropertyAll(
-                BorderSide(color: LabStyle.line),
-              ),
-              backgroundColor: WidgetStateProperty.resolveWith(
-                (states) => states.contains(WidgetState.selected)
-                    ? LabStyle.blueWash
-                    : LabStyle.surface,
-              ),
-              foregroundColor: WidgetStateProperty.resolveWith(
-                (states) => states.contains(WidgetState.selected)
-                    ? LabStyle.blue
-                    : LabStyle.secondary,
-              ),
-            ),
-          ),
-        ),
+        if (status == 1) viewSelector,
         const SizedBox(height: 8),
-        if (!table)
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text('浓度趋势', style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 3),
-                  Text(
-                    'PM2.5 浓度 · µg/m³',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  const SizedBox(height: 12),
-                  if (status == 2)
-                    Wrap(
-                      spacing: 8,
-                      children: [
-                        IconButton(
-                          tooltip: '较早',
-                          onPressed: busy || zoom == 1
-                              ? null
-                              : () => run(() async {
-                                  back++;
-                                  await reload();
-                                }),
-                          icon: const Icon(Icons.arrow_back),
-                        ),
-                        IconButton(
-                          tooltip: '较晚',
-                          onPressed: busy || back == 0
-                              ? null
-                              : () => run(() async {
-                                  back--;
-                                  await reload();
-                                }),
-                          icon: const Icon(Icons.arrow_forward),
-                        ),
-                        IconButton(
-                          tooltip: '放大',
-                          onPressed: busy || zoom >= 32
-                              ? null
-                              : () => run(() async {
-                                  zoom *= 2;
-                                  back *= 2;
-                                  await reload();
-                                }),
-                          icon: const Icon(Icons.zoom_in),
-                        ),
-                        IconButton(
-                          tooltip: '缩小',
-                          onPressed: busy || zoom <= 1
-                              ? null
-                              : () => run(() async {
-                                  zoom ~/= 2;
-                                  back ~/= 2;
-                                  await reload();
-                                }),
-                          icon: const Icon(Icons.zoom_out),
-                        ),
-                      ],
-                    ),
-                  RepaintBoundary(
-                    child: TrendChart(
-                      data: trend,
-                      devices: rois.map((r) => r.device).toList(),
-                      from: from,
-                      to: to,
-                      onRow: (row) => run(() => editRecord(row)),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
         if (table) ...[
           Wrap(
             spacing: 10,
@@ -1516,20 +1560,38 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
   Widget build(BuildContext context) => PopScope(
     canPop: leaving,
     onPopInvokedWithResult: (done, _) {
-      if (!done) unawaited(exit());
+      if (done) return;
+      if (trendFullscreen) {
+        setState(() => trendFullscreen = false);
+      } else {
+        unawaited(exit());
+      }
     },
     child: Scaffold(
-      appBar: AppBar(
-        leading: BackButton(onPressed: exit),
-        title: Text(
-          '${batch['project']} · ${status == 0
-              ? 'ROI 编辑'
-              : status == 1
-              ? '实时监控'
-              : '回放'}',
-        ),
-      ),
-      body: status == 0
+      appBar: trendFullscreen
+          ? AppBar(
+              leading: IconButton(
+                tooltip: '退出全屏',
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () => setState(() => trendFullscreen = false),
+              ),
+              title: const Text('PM2.5 浓度趋势 · µg/m³'),
+            )
+          : status == 0
+          ? null
+          : AppBar(
+              leading: BackButton(onPressed: exit),
+              title: Text(
+                '${batch['project']} · ${status == 0
+                    ? 'ROI 编辑'
+                    : status == 1
+                    ? '实时监控'
+                    : '回放'}',
+              ),
+            ),
+      body: trendFullscreen
+          ? fullscreenTrend()
+          : status == 0
           ? editor()
           : Align(
               alignment: Alignment.topCenter,
@@ -1573,9 +1635,22 @@ class _TemplatePageState extends State<TemplatePage> {
         if (s.hasError) return Center(child: Text('${s.error}'));
         if (!s.hasData) return const Center(child: CircularProgressIndicator());
         return ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
           children: [
-            const Text('可在批次 ROI 编辑页新建模板、加载并调整已有模板，再保存。'),
+            Text('模板库', style: Theme.of(context).textTheme.headlineLarge),
+            const SizedBox(height: 8),
+            Text(
+              '在批次取景页保存或加载 ROI 模板。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 20),
+            if (s.data!.isEmpty)
+              const Card(
+                child: Padding(
+                  padding: EdgeInsets.all(20),
+                  child: Text('暂无 ROI 模板'),
+                ),
+              ),
             for (final row in s.data!)
               Card(
                 child: ListTile(

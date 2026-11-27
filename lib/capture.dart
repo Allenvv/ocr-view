@@ -17,8 +17,9 @@ class CameraState {
   int get bufferTurns => data['bufferTurns'] as int? ?? 0;
   List<num>? get crop => (data['crop'] as List?)?.cast<num>();
   List<String> blockers(List<Roi> rois, int period) {
-    final limit = data['roiLimit'] as int? ?? 0;
     final isDemo = data['mode'] == 'demo';
+    // An adapter can report a measured profile limit; there is no editor limit.
+    final capacity = data['roiLimit'] as int?;
     return [
       if (isDemo &&
           (data['validated'] != true ||
@@ -30,8 +31,12 @@ class CameraState {
       if (!isDemo && data['ready'] != true) 'AF/AE 锁定和正式识别链路未验收。',
       if (!isDemo && data['framesReady'] != true) '未收到新鲜相机帧；请检查相机权限并重连。',
       if (data['storageReady'] != true) '可用存储不足或尚未确认。',
-      if (!isDemo && data['validated'] == true && rois.length > limit)
-        '当前设备的已验收档位只支持 $limit 个 ROI。',
+      if (!isDemo &&
+          data['validated'] == true &&
+          capacity != null &&
+          capacity > 0 &&
+          rois.length > capacity)
+        '目标设备已验收的采样档位仅支持 $capacity 个 ROI；请更换已验收档位。',
       if ((isDemo || data['validated'] == true) &&
           !(data['periods'] as List? ?? []).contains(period))
         '当前档位不支持该采样周期。',
