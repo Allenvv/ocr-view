@@ -18,6 +18,17 @@ class CameraState {
   bool get probeSupported => data['probeSupported'] == true;
   bool get tuneSupported => data['tuneSupported'] == true;
   int get turns => data['turns'] as int? ?? 0;
+  String? get previewDescription {
+    final pw = data['previewWidth'], ph = data['previewHeight'];
+    final aw = data['analysisOutputWidth'], ah = data['analysisOutputHeight'];
+    if (pw is! int || ph is! int || aw is! int || ah is! int) return null;
+    final fps = data['framesReady'] == true ? data['previewFps'] as num? : null;
+    final rate = fps != null && fps > 0
+        ? ' · ${fps.toStringAsFixed(0)} FPS'
+        : '';
+    return '预览 $pw×$ph$rate · 分析 $aw×$ah';
+  }
+
   int get bufferTurns => data['bufferTurns'] as int? ?? 0;
   List<num>? get crop => (data['crop'] as List?)?.cast<num>();
   List<String> blockers(List<Roi> rois, int period) {
@@ -105,6 +116,17 @@ class NativeSource implements CaptureSource {
   @override
   Future<CameraState> tune(Roi roi) =>
       _call('tune', {...roi.toJson(), 'timeoutMs': config.tuneTimeoutMs});
+  Future<CameraState> focusAt(double u, double v) =>
+      _call('focusAt', {'u': u, 'v': v});
+  Future<CameraState> switchLens(String id) async {
+    final report = await _call('switchLens', {'id': id});
+    _sessionId = report.data['sessionId'];
+    return report;
+  }
+
+  Future<CameraState> exposure(int index) =>
+      _call('exposure', {'index': index});
+
   @override
   Future<FrameReadings> sample(List<Roi> rois, int budgetMs) async {
     final elapsed = Stopwatch()..start();
@@ -138,6 +160,7 @@ class NativeSource implements CaptureSource {
           item['snapshot'] is Uint8List
               ? base64Encode(item['snapshot'] as Uint8List)
               : null,
+          (item['diagnostics'] as Map?)?.cast<String, Object?>(),
         ),
     ]);
   }
@@ -160,6 +183,8 @@ class NativeSource implements CaptureSource {
       row['text'] as String,
       (row['confidence'] as num).toDouble(),
       row['error'] as String?,
+      null,
+      (row['diagnostics'] as Map?)?.cast<String, Object?>(),
     );
   }
 
@@ -224,6 +249,8 @@ class CaptureLoop {
   int _origin = 0, _next = 0, _timeoutStreak = 0, _lastFrame = 0;
   final List<int> durations = [];
   String? warning;
+  Map<String, DataRowMap> latestRound = const {};
+  bool droppedLatest = false;
   bool get active => _active;
   CaptureLoop(
     this.store,
@@ -238,6 +265,8 @@ class CaptureLoop {
   void resume() {
     if (_active || _inFlight != null) return;
     _active = true;
+    latestRound = const {};
+    droppedLatest = false;
     _elapsed
       ..reset()
       ..start();
@@ -270,6 +299,8 @@ class CaptureLoop {
   }
 
   Future<void> _drop(int scheduled, int elapsed, String reason) async {
+    latestRound = const {};
+    droppedLatest = true;
     _timeoutStreak++;
     if (_timeoutStreak >= 3) warning = '持续丢拍：请减少 ROI，或为下一批明确选择已验证的较慢周期。';
     await store.log(
@@ -337,6 +368,10 @@ class CaptureLoop {
             config.period,
             readings,
           );
+          latestRound = {
+            for (final row in readings) row['device'] as String: row,
+          };
+          droppedLatest = false;
         }
       }
       // Never replay missed slots; aggregate the start time of each missed cadence in the log.

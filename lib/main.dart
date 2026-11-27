@@ -31,6 +31,11 @@ class CaptureApp extends StatelessWidget {
 void notice(BuildContext context, String message) => ScaffoldMessenger.of(
   context,
 ).showSnackBar(SnackBar(content: Text(message)));
+String batchTitle(DataRowMap row) {
+  final project = (row['project'] as String? ?? '').trim();
+  return project.isEmpty ? '${row['id']}' : project;
+}
+
 String statusLabel(Object? status) => switch (status) {
   'normal' => '正常',
   'review' => '待复核',
@@ -183,21 +188,17 @@ class _HomeState extends State<Home> {
     final v = await form(
       context,
       '新建批次',
-      ['批次编号', '项目名称', '测试人员', '备注'],
-      [nextBatchNumber(DateTime.now(), ids), '', '', ''],
-      validate: (input) => input.take(3).any((v) => v.isEmpty)
-          ? '批次编号、项目和测试人员不能为空'
+      ['批次编号'],
+      [nextBatchNumber(DateTime.now(), ids)],
+      validate: (input) => input.single.isEmpty
+          ? '批次编号不能为空'
           : ids.contains(input.first)
           ? '批次编号已存在，请更换'
           : null,
     );
     if (!mounted || v == null) return;
-    if (v.take(3).any((x) => x.isEmpty)) {
-      notice(context, '批次编号、项目和测试人员不能为空');
-      return;
-    }
     try {
-      await store.newBatch(v[0], v[1], v[2], v[3]);
+      await store.newBatch(v.single);
       final row = await store.batchById(v[0]);
       if (mounted) await open(row);
     } catch (e) {
@@ -328,7 +329,7 @@ class _HomeState extends State<Home> {
                         ),
                       ),
                       title: Text(
-                        '${row['project']}',
+                        batchTitle(row),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium,
@@ -349,7 +350,15 @@ class _HomeState extends State<Home> {
                             ),
                             const SizedBox(height: 5),
                             Text(
-                              '${dateLabel((row['started'] ?? row['created']) as int?)} · ${row['tester']}',
+                              [
+                                dateLabel(
+                                  (row['started'] ?? row['created']) as int?,
+                                ),
+                                if ((row['tester'] as String? ?? '')
+                                    .trim()
+                                    .isNotEmpty)
+                                  row['tester'],
+                              ].join(' · '),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: Theme.of(context).textTheme.bodySmall,
@@ -438,6 +447,15 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
   int selected = -1, page = 0, from = 0, to = 1, zoom = 1, back = 0;
   String filter = 'all';
   bool busy = false, table = false, leaving = false, trendFullscreen = false;
+  bool adjusting = false, sendingExposure = false;
+  int? wantedExposure;
+  final Map<String, List<Roi>> lensDrafts = {};
+  bool lensReview = false;
+  Offset? focusPoint;
+  bool? focusSuccess;
+  int? get exposureIndex =>
+      wantedExposure ?? camera?.data['exposureIndex'] as int?;
+
   bool get demo =>
       source?.demo == true ||
       (jsonDecode(batch['config'] as String) as Map)['mode'] == 'demo';
@@ -480,14 +498,30 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     await source?.close();
     final current = NativeSource()..config = config;
     source = current;
+    adjusting = false;
+    wantedExposure = null;
+    focusPoint = null;
+    final previousLens = camera?.data['lensId'];
     camera = await current.open();
+    final newLens = camera?.data['lensId'];
+    if (newLens != null && previousLens != null && newLens != previousLens) {
+      lensDrafts[previousLens as String] = List.of(rois);
+      rois = List.of(lensDrafts[newLens] ?? []);
+      selected = -1;
+      lensReview = rois.isNotEmpty;
+    }
     if (!mounted) {
       await current.close();
       return;
     }
     {
       cameraPoll = Timer.periodic(const Duration(milliseconds: 250), (_) async {
-        if (!mounted || polling || busy || status != 0 || source != current) {
+        if (!mounted ||
+            polling ||
+            busy ||
+            sendingExposure ||
+            status == 2 ||
+            source != current) {
           return;
         }
         polling = true;
@@ -495,8 +529,16 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           final next = await current.state();
           if (mounted &&
               source == current &&
-              status == 0 &&
-              (next.aspect != camera?.aspect ||
+              status != 2 &&
+              !busy &&
+              !sendingExposure &&
+              (next.previewDescription != camera?.previewDescription ||
+                  next.data['aeState'] != camera?.data['aeState'] ||
+                  next.data['fixed30Reported'] !=
+                      camera?.data['fixed30Reported'] ||
+                  next.data['adjustSupported'] !=
+                      camera?.data['adjustSupported'] ||
+                  next.aspect != camera?.aspect ||
                   next.turns != camera?.turns ||
                   next.bufferTurns != camera?.bufferTurns ||
                   !listEquals(next.crop, camera?.crop) ||
@@ -553,6 +595,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     if (input == null || !validRois(rois)) {
       throw StateError('请至少配置一个合法且设备编号不重复的 ROI');
     }
+    if (lensReview &&
+        !await confirm(context, '确认当前镜头的 ROI', '请确认每个框都与当前镜头中的仪器数字对齐。')) {
+      return;
+    }
+    if (!mounted) return;
+    lensReview = false;
     var state = await input.state();
     if (canTuneToStart(state)) {
       final roi = rois[selected >= 0 && selected < rois.length ? selected : 0];
@@ -594,7 +642,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
         }
       },
     );
-    cameraPoll?.cancel();
     loop!.resume();
     await reload();
   }
@@ -693,18 +740,18 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       if (camera?.texture == null) throw StateError('请先连接真实相机，再加载和核对模板');
       final next = Store.decodeRois(row['rois']);
       if (!validRois(next)) throw StateError('模板无效：每批最多 8 个 ROI，坐标须合法且编号不得重复');
-      if (row['viewport_version'] != (camera?.data['viewportVersion'] ?? 1) &&
-          !await confirm(
-            context,
-            '核对旧模板',
-            '旧模板的相机方向未知。请在真实取景中核对每个框；如不对齐请重画。',
-          )) {
+      if (!await confirm(
+        context,
+        '在当前镜头核对模板',
+        '模板不保证与当前镜头、焦段或摆位一致。加载后请在真实取景核对每个框；如不对齐请重画。',
+      )) {
         return;
       }
       if (!mounted) return;
       setState(() {
         rois = next;
         selected = -1;
+        lensReview = true;
       });
     }
   }
@@ -830,6 +877,16 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
         child: ListBody(
           children: [
             Text(camera?.description ?? '正在连接采集源'),
+            if (camera?.previewDescription case final details?) Text(details),
+            if (camera?.data.containsKey('fixed30Requested') == true)
+              Text(
+                camera?.data['fixed30Reported'] == true
+                    ? '相机请求：固定 30 FPS'
+                    : camera?.data['fixed30Requested'] == true
+                    ? '已请求固定 30 FPS，等待相机确认'
+                    : '设备未提供固定 30 FPS；显示实测帧率',
+              ),
+            if (camera?.data['antiBanding'] == 3) const Text('防闪烁：自动（相机回报）'),
             const SizedBox(height: 12),
             if (startBlockers.isEmpty)
               const Text('已就绪，可以开始。')
@@ -940,6 +997,206 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       state?.data['ready'] != true &&
       state!.withReady.allows(rois, config.period);
 
+  Widget liveCameraCard() {
+    final current = loop!;
+    final labels = <String, String>{};
+    for (final roi in rois) {
+      final row = current.latestRound[roi.device];
+      final value = row?['value'] as num?;
+      labels[roi.device] = !current.active
+          ? '已暂停'
+          : current.droppedLatest || row?['status'] == 'failed'
+          ? '识别失败'
+          : value == null
+          ? '等待采样'
+          : '${row?['text'] ?? value}${row?['status'] == 'review' ? '（待复核）' : ''}';
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('实时相机', style: Theme.of(context).textTheme.titleLarge),
+            if (camera?.previewDescription case final details?) Text(details),
+            const SizedBox(height: 8),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 420),
+              child: RoiCanvas(
+                rois: rois,
+                selected: -1,
+                texture: camera?.texture,
+                aspect: camera?.aspect ?? 9 / 16,
+                turns: camera?.turns ?? 0,
+                bufferTurns: camera?.bufferTurns ?? 0,
+                crop: camera?.crop,
+                demo: false,
+                onSelect: (_) {},
+                liveLabels: labels,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> focusPreview(Offset point) async {
+    final input = source;
+    if (input is! NativeSource || !adjusting || busy || sendingExposure) return;
+    await run(() async {
+      focusPoint = point;
+      focusSuccess = null;
+      try {
+        camera = await input.focusAt(point.dx, point.dy);
+        focusSuccess = true;
+      } catch (_) {
+        focusSuccess = false;
+        rethrow;
+      }
+    });
+  }
+
+  Future<void> changeExposure(int index) async {
+    final input = source;
+    if (input is! NativeSource || !adjusting || busy) return;
+    setState(() => wantedExposure = index);
+    if (sendingExposure) return;
+    setState(() => sendingExposure = true);
+    try {
+      while (mounted && source == input && wantedExposure != null) {
+        final next = wantedExposure!;
+        final state = await input.exposure(next);
+        if (!mounted || source != input) break;
+        setState(() {
+          camera = state;
+          if (wantedExposure == next) wantedExposure = null;
+        });
+      }
+    } catch (e) {
+      if (mounted && source == input) notice(context, '曝光调整失败：$e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          wantedExposure = null;
+          sendingExposure = false;
+        });
+      }
+    }
+  }
+
+  Future<void> selectLens(String key) async {
+    final input = source;
+    final previous = camera?.data['lensId'];
+    if (input is! NativeSource ||
+        !adjusting ||
+        busy ||
+        sendingExposure ||
+        key == previous) {
+      return;
+    }
+    await run(() async {
+      final current = await input.switchLens(key);
+      if (!mounted || source != input) return;
+      final actual = current.data['lensId'];
+      setState(() {
+        camera = current;
+        focusPoint = null;
+        focusSuccess = null;
+        if (actual != null && actual != previous) {
+          if (previous is String) lensDrafts[previous] = List.of(rois);
+          rois = List.of(lensDrafts[actual] ?? []);
+          selected = -1;
+          lensReview = rois.isNotEmpty;
+        }
+      });
+      if (actual != key) {
+        notice(context, current.description);
+      } else {
+        notice(context, '光学镜头已切换，请重新核对或框选 ROI');
+      }
+    });
+  }
+
+  Widget lensSelector() {
+    final options = (camera?.data['lenses'] as List? ?? const [])
+        .whereType<Map>()
+        .toList();
+    if (options.length < 2) {
+      return const Text('无其他可用光学焦段', style: TextStyle(fontSize: 11));
+    }
+    final active = camera?.data['lensId'];
+    return DropdownButton<String>(
+      value: options.any((x) => x['id'] == active) ? active as String : null,
+      hint: const Text('光学焦段'),
+      underline: const SizedBox.shrink(),
+      isDense: true,
+      items: [
+        for (final option in options)
+          DropdownMenuItem(
+            value: option['id'] as String,
+            child: Text(
+              option['mm'] is num && (option['mm'] as num) > 0
+                  ? '${(option['mm'] as num).round()} mm 等效'
+                  : '标准镜头',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ),
+      ],
+      onChanged: busy || sendingExposure
+          ? null
+          : (key) {
+              if (key != null) unawaited(selectLens(key));
+            },
+    );
+  }
+
+  Widget exposureSlider() {
+    final min = camera?.data['exposureMin'] as int?;
+    final max = camera?.data['exposureMax'] as int?;
+    final index = exposureIndex ?? 0;
+    final step = camera?.data['exposureStep'] as num? ?? 0;
+    final ev = index * step;
+    final label = '曝光补偿 ${ev >= 0 ? '+' : ''}${ev.toStringAsFixed(2)} EV';
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          min != null && max != null && max > min ? label : '不支持曝光补偿',
+          style: const TextStyle(fontSize: 11),
+        ),
+        if (min != null && max != null && max > min)
+          RotatedBox(
+            quarterTurns: 3,
+            child: SizedBox(
+              width: 128,
+              height: 44,
+              child: Slider(
+                value: index.clamp(min, max).toDouble(),
+                min: min.toDouble(),
+                max: max.toDouble(),
+                divisions: max - min,
+                label: label,
+                semanticFormatterCallback: (v) =>
+                    '${(v * step).toStringAsFixed(2)} EV',
+                onChanged: busy
+                    ? null
+                    : (v) => unawaited(changeExposure(v.round())),
+              ),
+            ),
+          ),
+        Text(
+          camera?.data['aeLockSupported'] != true
+              ? '不支持 AE 锁定'
+              : camera?.data['aeState'] == 3
+              ? 'AE 已锁定'
+              : 'AE 未锁定',
+          style: const TextStyle(fontSize: 11),
+        ),
+      ],
+    );
+  }
+
   Widget editor() => LayoutBuilder(
     builder: (context, box) {
       final wide = box.maxWidth >= 600 && box.maxWidth > box.maxHeight;
@@ -957,7 +1214,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           : !hardwareValidation && camera?.data['validated'] != true
           ? '真实采集未就绪 · 缺少验收'
           : '真实采集未就绪 · 查看原因';
-      final hint = '拖画新框 · 框内移动 · 拖四角调整';
+      final hint = adjusting ? '点按对焦 · 侧边滑杆调曝光' : '拖画新框 · 框内移动 · 拖四角调整';
       Widget panel(Widget child) => Material(
         color: const Color(0xeefafcfc),
         borderRadius: BorderRadius.circular(16),
@@ -1004,45 +1261,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
             style: TextButton.styleFrom(foregroundColor: LabStyle.ink),
             label: Text('ROI ${rois.length}'),
           ),
-          if (!demo &&
-              (camera?.tuneSupported == true || camera?.probeSupported == true))
-            PopupMenuButton<String>(
-              tooltip: '相机测试',
-              iconColor: LabStyle.ink,
-              enabled: !busy,
-              itemBuilder: (_) => [
-                if (camera?.tuneSupported == true)
-                  PopupMenuItem(
-                    value: 'tune',
-                    enabled: selected >= 0,
-                    child: const Text('相机调优（ROI 优先）'),
-                  ),
-                if (camera?.probeSupported == true)
-                  PopupMenuItem(
-                    value: 'probe',
-                    enabled: selected >= 0,
-                    child: const Text('测试选中 ROI（不入库）'),
-                  ),
-              ],
-              onSelected: (action) => run(() async {
-                if (action == 'tune') {
-                  camera = await source!.tune(rois[selected]);
-                  await store.log('action', camera!.description, id);
-                  if (context.mounted) notice(context, camera!.description);
-                } else {
-                  final reading = await (source! as NativeSource).probe(
-                    rois[selected],
-                  );
-                  if (context.mounted) {
-                    notice(
-                      context,
-                      reading.error ??
-                          '不入库测试：${reading.text.isEmpty ? '未识别' : reading.text} · 置信度 ${reading.confidence.toStringAsFixed(2)}',
-                    );
-                  }
-                }
-              }),
-            ),
         ],
       );
       final startButton = FilledButton.icon(
@@ -1080,7 +1298,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               crop: camera?.crop,
               demo: demo,
               onSelect: (i) => setState(() => selected = i),
-              onChange: busy || (!demo && camera?.texture == null)
+              onFocus: adjusting
+                  ? (point) => unawaited(focusPreview(point))
+                  : null,
+              focusPoint: adjusting ? focusPoint : null,
+              focusSuccess: focusSuccess,
+              onChange: busy || adjusting || (!demo && camera?.texture == null)
                   ? null
                   : (i, r) {
                       if (i < 0 && rois.length >= maxRois) {
@@ -1098,6 +1321,25 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                       });
                     },
             ),
+            if (adjusting)
+              Align(
+                alignment: Alignment.centerRight,
+                child: SafeArea(
+                  child: panel(
+                    Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          lensSelector(),
+                          const SizedBox(height: 6),
+                          exposureSlider(),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(8),
@@ -1145,7 +1387,20 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
-                              startButton,
+                              if (camera?.data['adjustSupported'] == true ||
+                                  adjusting)
+                                TextButton.icon(
+                                  onPressed: busy || sendingExposure
+                                      ? null
+                                      : () => setState(() {
+                                          adjusting = !adjusting;
+                                          focusPoint = null;
+                                          focusSuccess = null;
+                                        }),
+                                  icon: const Icon(Icons.tune),
+                                  label: Text(adjusting ? '完成调整' : '调整'),
+                                ),
+                              if (!adjusting) startButton,
                             ],
                           ),
                         ),
@@ -1189,6 +1444,9 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       from: from,
       to: to,
       expand: fullscreen,
+      plotHeight: MediaQuery.orientationOf(context) == Orientation.landscape
+          ? 180
+          : 220,
       onRow: (row) => run(() => editRecord(row)),
     ),
   );
@@ -1221,6 +1479,32 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           ),
         ),
       ),
+    ),
+  );
+
+  Widget batchMenu() => MenuAnchor(
+    menuChildren: [
+      MenuItemButton(
+        onPressed: busy ? null : () => run(() => export()),
+        leadingIcon: const Icon(Icons.ios_share_rounded),
+        child: const Text('导出 CSV'),
+      ),
+      MenuItemButton(
+        onPressed: busy ? null : () => run(() => export(failures: true)),
+        leadingIcon: const Icon(Icons.file_download_outlined),
+        child: const Text('导出失败日志'),
+      ),
+      MenuItemButton(
+        onPressed: () => showLogs(context, store, id),
+        leadingIcon: const Icon(Icons.receipt_long),
+        child: const Text('日志'),
+      ),
+    ],
+    builder: (_, controller, child) => IconButton(
+      onPressed: () =>
+          controller.isOpen ? controller.close() : controller.open(),
+      icon: const Icon(Icons.more_horiz_rounded),
+      tooltip: '更多',
     ),
   );
 
@@ -1388,6 +1672,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               ),
             ),
           ),
+        if (status == 1 && !demo && loop != null) liveCameraCard(),
         const SizedBox(height: 18),
         LayoutBuilder(
           builder: (context, box) {
@@ -1479,33 +1764,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                 child: const Text('停止批次'),
               ),
             ],
-            MenuAnchor(
-              menuChildren: [
-                MenuItemButton(
-                  onPressed: busy ? null : () => run(() => export()),
-                  leadingIcon: const Icon(Icons.ios_share_rounded),
-                  child: const Text('导出 CSV'),
-                ),
-                MenuItemButton(
-                  onPressed: busy
-                      ? null
-                      : () => run(() => export(failures: true)),
-                  leadingIcon: const Icon(Icons.file_download_outlined),
-                  child: const Text('导出失败日志'),
-                ),
-                MenuItemButton(
-                  onPressed: () => showLogs(context, store, id),
-                  leadingIcon: const Icon(Icons.receipt_long),
-                  child: const Text('日志'),
-                ),
-              ],
-              builder: (_, controller, child) => OutlinedButton.icon(
-                onPressed: () =>
-                    controller.isOpen ? controller.close() : controller.open(),
-                icon: const Icon(Icons.more_horiz_rounded),
-                label: const Text('更多'),
-              ),
-            ),
           ],
         ),
         if (status == 1)
@@ -1661,12 +1919,13 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           : AppBar(
               leading: BackButton(onPressed: exit),
               title: Text(
-                '${batch['project']} · ${status == 0
+                '${batchTitle(batch)} · ${status == 0
                     ? 'ROI 编辑'
                     : status == 1
                     ? '实时监控'
                     : '回放'}',
               ),
+              actions: [batchMenu()],
             ),
       body: trendFullscreen
           ? fullscreenTrend()

@@ -54,6 +54,7 @@ internal class RecModel(private val assets: AssetManager) : AutoCloseable {
     private val numeric = Regex("(?:[0-9]+(?:\\.[0-9]+)?|\\.[0-9]+)")
     fun recognize(frame: LumaFrame, roi: Map<*,*>, displayTurns: Int): Map<String,Any> {
         val id = roi["deviceId"] as String
+        val diagnostics = mutableMapOf<String, Any>()
         return try {
             val l=(roi["l"] as Number).toDouble(); val r=(roi["r"] as Number).toDouble()
             val t=(roi["t"] as Number).toDouble(); val b=(roi["b"] as Number).toDouble()
@@ -62,16 +63,32 @@ internal class RecModel(private val assets: AssetManager) : AutoCloseable {
             require(listOf(l,t,r,b).all { it.isFinite() && it in 0.0..1.0 } && boxW >= 2 && boxH >= 2) { "识别框过小或越界" }
             val aspect = if (displayTurns % 2 == 0) boxW/boxH else boxH/boxW
             val resizedWidth = ceil(h*aspect).toInt().coerceIn(1, w)
+            diagnostics.putAll(mapOf("roiWidthPx" to (if (displayTurns % 2 == 0) boxW else boxH).toInt(),
+                "roiHeightPx" to (if (displayTurns % 2 == 0) boxH else boxW).toInt(),
+                "resizedWidthPx" to resizedWidth, "rotationQuarterTurns" to displayTurns))
+            val histogram = IntArray(256)
             tensor.fill(0f)
             for (y in 0 until h) for (x in 0 until resizedWidth) {
                 val px=(x+.5)/resizedWidth; val py=(y+.5)/h
                 val u=l+(r-l)*inverseX(displayTurns,px,py); val v=t+(b-t)*inverseY(displayTurns,px,py)
                 val pixel = frame.interpolatedColor(u, v)
+                if ((x + y) % 4 == 0) {
+                    val luma = ((77 * ((pixel shr 16) and 255)) + (150 * ((pixel shr 8) and 255)) + (29 * (pixel and 255))) shr 8
+                    histogram[luma]++
+                }
                 val i = y*w+x
                 tensor[i] = normalize(pixel and 255)
                 tensor[planeSize+i] = normalize((pixel shr 8) and 255)
                 tensor[2*planeSize+i] = normalize((pixel shr 16) and 255)
             }
+            val total = histogram.sum()
+            fun percentile(percent: Int): Int {
+                val threshold = (total * percent + 99) / 100
+                var count = 0
+                return histogram.indices.first { count += histogram[it]; count >= threshold }
+            }
+            diagnostics["lumaP05"] = percentile(5)
+            diagnostics["lumaP95"] = percentile(95)
             OnnxTensor.createTensor(environment, FloatBuffer.wrap(tensor),longArrayOf(1,3,h.toLong(),w.toLong())).use { value ->
                 session.run(mapOf(input to value)).use { result ->
                     val steps=(result[0].value as Array<*>).single() as Array<*>
@@ -89,11 +106,11 @@ internal class RecModel(private val assets: AssetManager) : AutoCloseable {
                     }
                     val read = text.toString().trim()
                     val confidence = if (count==0) 0.0 else sum/count
-                    val row = mapOf("deviceId" to id,"text" to read,"confidence" to confidence)
-                    if (numeric.matches(read)) row else row + ("error" to "识别结果不是完整数字，请只框选读数")
+                    val row = mapOf("deviceId" to id,"text" to read,"confidence" to confidence,"diagnostics" to diagnostics)
+                    if (numeric.matches(read)) row else row + ("error" to if (read.isEmpty()) "模型未输出字符" else "识别结果不是完整数字，请只框选读数")
                 }
             }
-        } catch (e:Exception) { mapOf("deviceId" to id,"text" to "","confidence" to 0.0,"error" to (e.message?:"REC 失败")) }
+        } catch (e:Exception) { mapOf("deviceId" to id,"text" to "","confidence" to 0.0,"diagnostics" to diagnostics,"error" to (e.message?:"REC 失败")) }
     }
     override fun close() = session.close()
 }

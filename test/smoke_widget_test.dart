@@ -30,6 +30,65 @@ class FixtureStore extends Store {
 }
 
 void main() {
+  for (final status in [1, 2]) {
+    testWidgets('batch status $status has one app bar menu', (tester) async {
+      final store = FixtureStore();
+      addTearDown(store.close);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: BatchPage(store, {
+            'id': 'MENU',
+            'project': '菜单测试',
+            'status': status,
+            'rois': '[]',
+            'config': '{}',
+          }),
+        ),
+      );
+      await tester.pump();
+      final menu = find.byTooltip('更多');
+      expect(menu, findsOneWidget);
+      expect(
+        find.ancestor(of: menu, matching: find.byType(AppBar)),
+        findsOneWidget,
+      );
+      await tester.tap(menu);
+      await tester.pumpAndSettle();
+      expect(find.text('导出 CSV'), findsOneWidget);
+      expect(find.text('导出失败日志'), findsOneWidget);
+      expect(find.text('日志'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      await tester.pumpAndSettle();
+    });
+  }
+
+  testWidgets('creation dialog has only one field and opens the ROI editor', (
+    tester,
+  ) async {
+    final store = FixtureStore();
+    addTearDown(store.close);
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(
+      NativeSource.channel,
+      (call) async => null,
+    );
+    addTearDown(
+      () => messenger.setMockMethodCallHandler(NativeSource.channel, null),
+    );
+    await tester.pumpWidget(CaptureApp(store));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('建立测试'));
+    await tester.pumpAndSettle();
+    expect(find.byType(TextField), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'ONLY-ID');
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(find.byType(RoiCanvas), findsOneWidget);
+    expect(find.byTooltip('相机测试'), findsNothing);
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'unverified native capture stays disabled; no production demo entry exists',
     (tester) async {

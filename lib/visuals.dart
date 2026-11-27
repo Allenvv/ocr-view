@@ -12,6 +12,10 @@ class RoiCanvas extends StatelessWidget {
   final List<num>? crop;
   final bool demo;
   final ValueChanged<int> onSelect;
+  final Map<String, String>? liveLabels;
+  final ValueChanged<Offset>? onFocus;
+  final Offset? focusPoint;
+  final bool? focusSuccess;
   final void Function(int, Roi)? onChange;
   const RoiCanvas({
     super.key,
@@ -25,6 +29,10 @@ class RoiCanvas extends StatelessWidget {
     required this.demo,
     required this.onSelect,
     this.onChange,
+    this.liveLabels,
+    this.onFocus,
+    this.focusPoint,
+    this.focusSuccess,
   });
   @override
   Widget build(BuildContext context) => Center(
@@ -43,6 +51,12 @@ class RoiCanvas extends StatelessWidget {
             }
           }
 
+          Offset rotatePoint(Offset p, int count) => switch (count % 4) {
+            1 => Offset(1 - p.dy, p.dx),
+            2 => Offset(1 - p.dx, 1 - p.dy),
+            3 => Offset(p.dy, 1 - p.dx),
+            _ => p,
+          };
           return _InteractiveCanvas(
             key: ValueKey((
               turns,
@@ -61,6 +75,14 @@ class RoiCanvas extends StatelessWidget {
             texture: texture,
             demo: demo,
             onSelect: onSelect,
+            liveLabels: liveLabels,
+            onFocus: onFocus == null
+                ? null
+                : (p) => onFocus!(rotatePoint(p, -turns)),
+            focusPoint: focusPoint == null
+                ? null
+                : rotatePoint(focusPoint!, turns),
+            focusSuccess: focusSuccess,
             project: normalized,
             onChange: onChange == null
                 ? null
@@ -83,6 +105,10 @@ class _InteractiveCanvas extends StatefulWidget {
   final List<num>? crop;
   final ValueChanged<int> onSelect;
   final void Function(int, Roi)? onChange;
+  final Map<String, String>? liveLabels;
+  final ValueChanged<Offset>? onFocus;
+  final Offset? focusPoint;
+  final bool? focusSuccess;
   final Offset Function(Offset) project;
   final String Function() nextId;
   const _InteractiveCanvas({
@@ -98,6 +124,10 @@ class _InteractiveCanvas extends StatefulWidget {
     required this.onChange,
     required this.project,
     required this.nextId,
+    required this.liveLabels,
+    required this.onFocus,
+    required this.focusPoint,
+    required this.focusSuccess,
   });
   @override
   State<_InteractiveCanvas> createState() => _InteractiveCanvasState();
@@ -203,10 +233,15 @@ class _InteractiveCanvasState extends State<_InteractiveCanvas> {
     child: GestureDetector(
       behavior: HitTestBehavior.opaque,
       dragStartBehavior: DragStartBehavior.down,
-      onTapDown: (d) {
-        final i = hit(widget.project(d.localPosition));
-        if (i >= 0) widget.onSelect(i);
-      },
+      onTapUp: widget.onFocus == null
+          ? null
+          : (d) => widget.onFocus!(widget.project(d.localPosition)),
+      onTapDown: widget.onFocus != null || widget.liveLabels != null
+          ? null
+          : (d) {
+              final i = hit(widget.project(d.localPosition));
+              if (i >= 0) widget.onSelect(i);
+            },
       onPanStart: widget.onChange == null
           ? null
           : (d) => begin(widget.project(d.localPosition)),
@@ -270,8 +305,60 @@ class _InteractiveCanvasState extends State<_InteractiveCanvas> {
               draft,
               index,
               Theme.of(context).textTheme.bodyMedium?.fontFamily,
+              widget.liveLabels != null,
             ),
           ),
+          if (widget.liveLabels case final labels?)
+            for (final roi in widget.rois)
+              Positioned(
+                left: (roi.l * widget.boxSize.width).clamp(
+                  0.0,
+                  (widget.boxSize.width - 108).clamp(0.0, widget.boxSize.width),
+                ),
+                top: (roi.t * widget.boxSize.height - 22).clamp(
+                  0.0,
+                  widget.boxSize.height,
+                ),
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: labels[roi.device] == '识别失败'
+                          ? LabStyle.amber
+                          : LabStyle.primary,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 2,
+                      ),
+                      child: Text(
+                        '${roi.device} · ${labels[roi.device] ?? '等待采样'}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          if (widget.focusPoint case final point?)
+            Positioned(
+              left: pixels(point).dx - 16,
+              top: pixels(point).dy - 16,
+              child: IgnorePointer(
+                child: Icon(
+                  Icons.center_focus_weak,
+                  size: 32,
+                  color: widget.focusSuccess == false
+                      ? Colors.redAccent
+                      : Colors.amberAccent,
+                ),
+              ),
+            ),
         ],
       ),
     ),
@@ -360,7 +447,15 @@ class _RoiPaint extends CustomPainter {
   final Roi? draft;
   final int index;
   final String? fontFamily;
-  _RoiPaint(this.list, this.selected, this.draft, this.index, this.fontFamily);
+  final bool hideLabels;
+  _RoiPaint(
+    this.list,
+    this.selected,
+    this.draft,
+    this.index,
+    this.fontFamily,
+    this.hideLabels,
+  );
   @override
   void paint(Canvas canvas, Size size) {
     void draw(Roi roi, bool active) {
@@ -389,6 +484,7 @@ class _RoiPaint extends CustomPainter {
           canvas.drawCircle(v, 4, Paint()..color = color);
         }
       }
+      if (hideLabels) return;
       final tp = TextPainter(
         text: TextSpan(
           text: roi.device,
@@ -417,7 +513,8 @@ class _RoiPaint extends CustomPainter {
       selected != old.selected ||
       draft != old.draft ||
       index != old.index ||
-      fontFamily != old.fontFamily;
+      fontFamily != old.fontFamily ||
+      hideLabels != old.hideLabels;
 }
 
 class TrendChart extends StatelessWidget {
@@ -426,6 +523,7 @@ class TrendChart extends StatelessWidget {
   final int from, to;
   final ValueChanged<DataRowMap> onRow;
   final bool expand;
+  final double plotHeight;
   const TrendChart({
     super.key,
     required this.data,
@@ -434,6 +532,7 @@ class TrendChart extends StatelessWidget {
     required this.to,
     required this.onRow,
     this.expand = false,
+    this.plotHeight = 220,
   });
   @override
   Widget build(BuildContext context) {
@@ -521,7 +620,7 @@ class TrendChart extends StatelessWidget {
         if (expand)
           Expanded(child: plot)
         else
-          SizedBox(height: 220, child: plot),
+          SizedBox(height: plotHeight, child: plot),
       ],
     );
   }

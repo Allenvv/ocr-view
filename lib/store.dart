@@ -66,11 +66,13 @@ class Store extends GeneratedDatabase {
   Future<DataRowMap> batchById(String id) async =>
       (await query('SELECT * FROM batches WHERE id=?', [Variable(id)])).single;
   Future<void> newBatch(
-    String id,
-    String project,
-    String tester,
-    String remark,
-  ) => transaction(() async {
+    String id, [
+    String project = '',
+    String tester = '',
+    String remark = '',
+  ]) => transaction(() async {
+    id = id.trim();
+    if (id.isEmpty) throw ArgumentError('批次编号不能为空');
     await customStatement(
       'INSERT INTO batches(id,project,tester,remark,created) VALUES(?,?,?,?,?)',
       [id, project, tester, remark, now],
@@ -141,7 +143,17 @@ class Store extends GeneratedDatabase {
           r['status'],
         ],
       );
-      if (r['error'] != null) await log('ocr', jsonEncode(r), id);
+      if (r['error'] != null) {
+        await log(
+          'ocr',
+          jsonEncode({
+            ...r,
+            'frameAtMs': timestamp,
+            'scheduledAtMs': scheduled,
+          }),
+          id,
+        );
+      }
     }
   });
   Future<List<DataRowMap>> records(String id, String filter, int offset) {

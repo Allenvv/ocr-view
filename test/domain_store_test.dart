@@ -22,6 +22,16 @@ void main() {
     expect(validRois(List.generate(8, (i) => roi.rename('$i'))), true);
     expect(validRois(List.generate(9, (i) => roi.rename('$i'))), false);
   });
+  test('a batch only requires an identifier', () async {
+    final store = Store(NativeDatabase.memory());
+    addTearDown(store.close);
+    await store.newBatch('  B-001  ');
+    final row = await store.batchById('B-001');
+    expect(row['project'], '');
+    expect(row['tester'], '');
+    await expectLater(store.newBatch('  '), throwsArgumentError);
+    await expectLater(store.newBatch('B-001'), throwsA(anything));
+  });
   test('templates round trip more than five ROIs', () async {
     final store = Store(NativeDatabase.memory());
     addTearDown(store.close);

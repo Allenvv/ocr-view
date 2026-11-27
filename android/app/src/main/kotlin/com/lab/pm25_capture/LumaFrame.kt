@@ -11,10 +11,16 @@ internal fun inverseY(turns: Int,u: Double,v: Double) = when (turns) {1->1-u;2->
 /** Immutable, cropped YUV data in sensor order; every consumer uses the same inverse rotation. */
 internal class LumaFrame(
     private val yPlane: ByteArray, private val uPlane: ByteArray, private val vPlane: ByteArray,
-    private val width: Int, private val height: Int, private val rotation: Int, val timestamp: Long,
-    private val left: Int, private val top: Int, private val sourceWidth: Int, private val sourceHeight: Int
+    val width: Int, val height: Int, val rotation: Int, val timestamp: Long,
+    private val left: Int, private val top: Int, val sourceWidth: Int, val sourceHeight: Int, val sensorTimeNs: Long
 ) {
-    private val chromaWidth = (left % 2 + width + 1) / 2
+    val chromaOffsetX = left and 1
+    val chromaOffsetY = top and 1
+    val chromaWidth = (chromaOffsetX + width + 1) / 2
+    val chromaHeight = (chromaOffsetY + height + 1) / 2
+    fun copyPlane(index: Int, dest: java.nio.ByteBuffer) {
+        dest.put(when(index) { 0 -> yPlane; 1 -> uPlane; else -> vPlane })
+    }
     val uprightWidth get() = if (rotation % 180 == 0) width else height
     val uprightHeight get() = if (rotation % 180 == 0) height else width
     private fun rawX(u: Double,v: Double) = inverseX(rotation/90,u,v)
@@ -24,7 +30,6 @@ internal class LumaFrame(
     private fun x(u: Double,v: Double) = (rawX(u,v)*width).toInt().coerceIn(0,width-1)
     private fun y(u: Double,v: Double) = (rawY(u,v)*height).toInt().coerceIn(0,height-1)
     private fun grayAt(x: Int,y: Int) = yPlane[y*width+x].toInt() and 255
-    fun colorAt(u: Double,v: Double) = rgb(x(u,v),y(u,v))
     private fun rgb(x: Int,y: Int): Int {
         val i = (left % 2 + x)/2 + ((top % 2 + y)/2)*chromaWidth
         val yy = (grayAt(x,y) - 16).coerceAtLeast(0)
@@ -53,7 +58,10 @@ internal class LumaFrame(
         val l = (roi["l"] as Number).toDouble(); val r = (roi["r"] as Number).toDouble()
         val t = (roi["t"] as Number).toDouble(); val b = (roi["b"] as Number).toDouble()
         require(l >= 0 && t >= 0 && r <= 1 && b <= 1 && r > l && b > t)
-        val w = 96; val h = 32
+        val rw = (r-l)*uprightWidth; val rh = (b-t)*uprightHeight
+        val aspect = if (displayTurns % 2 == 0) rw/rh else rh/rw
+        val w = if (aspect >= 1) 160 else (160 * aspect).roundToInt().coerceAtLeast(1)
+        val h = if (aspect <= 1) 160 else (160 / aspect).roundToInt().coerceAtLeast(1)
         val header = "P5\n$w $h\n255\n".toByteArray(Charsets.US_ASCII)
         header + ByteArray(w*h) { i ->
             val px=(i%w+.5)/w; val py=(i/w+.5)/h
@@ -64,10 +72,14 @@ internal class LumaFrame(
     companion object {
         private fun copy(p: ImageProxy.PlaneProxy, l: Int,t: Int,w: Int,h: Int): ByteArray {
             val buffer = p.buffer.duplicate(); val origin = buffer.position(); val out = ByteArray(w*h)
+            val row = if (p.pixelStride > 1) ByteArray((w - 1) * p.pixelStride + 1) else null
             for (y in 0 until h) {
                 val start = origin+(y+t)*p.rowStride+l*p.pixelStride
                 if (p.pixelStride == 1) { buffer.position(start); buffer.get(out,y*w,w) }
-                else for (x in 0 until w) out[y*w+x] = buffer.get(start+x*p.pixelStride)
+                else {
+                    buffer.position(start); buffer.get(row!!)
+                    for (x in 0 until w) out[y*w+x] = row[x*p.pixelStride]
+                }
             }
             return out
         }
@@ -76,7 +88,7 @@ internal class LumaFrame(
             require(w>0 && h>0)
             val cw=(l%2+w+1)/2; val ch=(t%2+h+1)/2
             return LumaFrame(copy(proxy.planes[0],l,t,w,h),copy(proxy.planes[1],l/2,t/2,cw,ch),
-                copy(proxy.planes[2],l/2,t/2,cw,ch),w,h,proxy.imageInfo.rotationDegrees,timestamp,l,t,proxy.width,proxy.height)
+                copy(proxy.planes[2],l/2,t/2,cw,ch),w,h,proxy.imageInfo.rotationDegrees,timestamp,l,t,proxy.width,proxy.height,proxy.imageInfo.timestamp)
         }
     }
 }

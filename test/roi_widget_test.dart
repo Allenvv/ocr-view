@@ -78,6 +78,70 @@ void main() {
     );
   }
 
+  testWidgets('focus taps use the inverse viewport transform', (tester) async {
+    Offset? actual;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 320,
+            height: 360,
+            child: RoiCanvas(
+              rois: const [],
+              selected: -1,
+              texture: null,
+              aspect: 16 / 9,
+              turns: 1,
+              demo: false,
+              onSelect: (_) => fail('ROI selection while adjusting'),
+              onFocus: (point) => actual = point,
+            ),
+          ),
+        ),
+      ),
+    );
+    final area = tester.getRect(
+      find.descendant(
+        of: find.byType(RoiCanvas),
+        matching: find.byType(GestureDetector),
+      ),
+    );
+    await tester.tapAt(
+      Offset(area.left + area.width * .2, area.top + area.height * .3),
+    );
+    expect(actual!.dx, closeTo(.3, .001));
+    expect(actual!.dy, closeTo(.8, .001));
+  });
+
+  testWidgets('live overlays never substitute a past reading on failure', (
+    tester,
+  ) async {
+    Future<void> show(Map<String, String> labels) => tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: SizedBox(
+            width: 320,
+            height: 360,
+            child: RoiCanvas(
+              rois: const [Roi('DEV01', .2, .3, .5, .5)],
+              selected: -1,
+              texture: null,
+              aspect: 9 / 16,
+              demo: false,
+              onSelect: (_) {},
+              liveLabels: labels,
+            ),
+          ),
+        ),
+      ),
+    );
+    await show({'DEV01': '23.1'});
+    expect(find.text('DEV01 · 23.1'), findsOneWidget);
+    await show({'DEV01': '识别失败'});
+    expect(find.text('DEV01 · 识别失败'), findsOneWidget);
+    expect(find.text('DEV01 · 23.1'), findsNothing);
+  });
+
   testWidgets('editor draws a seventh ROI', (tester) async {
     final rois = List.generate(
       6,

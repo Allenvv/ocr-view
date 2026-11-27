@@ -115,12 +115,14 @@ class Reading {
   final String device, text;
   final double confidence;
   final String? error, snapshot;
+  final Map<String, Object?>? diagnostics;
   const Reading(
     this.device,
     this.text,
     this.confidence, [
     this.error,
     this.snapshot,
+    this.diagnostics,
   ]);
   Map<String, Object?> classify(CaptureConfig config) {
     final c = confidence.isFinite && confidence >= 0 && confidence <= 1
@@ -148,6 +150,7 @@ class Reading {
           : 'review',
       'text': text,
       'error': failure,
+      if (failure != null && diagnostics != null) 'diagnostics': diagnostics,
       if (config.saveSnapshot && failure != null && snapshot != null)
         'snapshotPgmBase64': snapshot,
     };
