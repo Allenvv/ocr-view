@@ -138,9 +138,6 @@ void main() {
       await save('PM25-v0.3.0-capture-status');
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('进入离线演示'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('使用演示 ROI'));
       await save('PM25-v0.3.0-roi-portrait');
       tester.view.physicalSize = const Size(800, 392);
       await save('PM25-v0.3.0-roi-landscape');

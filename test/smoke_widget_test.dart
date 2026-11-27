@@ -31,7 +31,7 @@ class FixtureStore extends Store {
 
 void main() {
   testWidgets(
-    'unverified native capture stays disabled; demo requires a choice',
+    'unverified native capture stays disabled; no production demo entry exists',
     (tester) async {
       final store = FixtureStore();
       addTearDown(store.close);
@@ -53,9 +53,9 @@ void main() {
       );
       await tester.pumpWidget(CaptureApp(store));
       await tester.pumpAndSettle();
-      final newBatch = find.text('新建批次');
+      final newBatch = find.text('建立测试');
       expect(
-        tester.getCenter(find.widgetWithText(FilledButton, '新建批次')).dx,
+        tester.getCenter(find.widgetWithText(FilledButton, '建立测试')).dx,
         180,
       );
       final list = find.byType(ListView);
@@ -84,22 +84,13 @@ void main() {
       expect(find.textContaining('AF/AE 锁定和正式识别链路'), findsOneWidget);
       await tester.tap(find.text('关闭'));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('进入离线演示'));
-      await tester.pumpAndSettle();
-      expect(find.text('离线演示 · 合成读数'), findsOneWidget);
-      await tester.ensureVisible(find.text('使用演示 ROI'));
-      await tester.tap(find.text('使用演示 ROI'));
-      await tester.pumpAndSettle();
-      final demo = tester.widget<FilledButton>(
-        find.widgetWithText(FilledButton, '开始演示'),
-      );
-      expect(demo.onPressed, isNotNull);
+      expect(find.text('进入离线演示'), findsNothing);
       final portrait = tester.getSize(find.byType(RoiCanvas));
       expect(portrait.height, greaterThan(550));
       tester.view.physicalSize = const Size(740, 360);
       await tester.pumpAndSettle();
       expect(tester.getSize(find.byType(RoiCanvas)).width, greaterThan(680));
-      expect(find.text('开始演示').hitTestable(), findsOneWidget);
+      expect(find.text('查看启动条件').hitTestable(), findsOneWidget);
       expect(find.byTooltip('加载模板').hitTestable(), findsOneWidget);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());

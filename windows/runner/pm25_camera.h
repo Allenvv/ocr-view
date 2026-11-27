@@ -4,8 +4,7 @@
 #include <flutter/texture_registrar.h>
 #include <memory>
 
-// Media Foundation preview proof of concept. Nothing from an unvalidated
-// camera/model combination is emitted as an experimental measurement.
+// Media Foundation preview and offline REC sampling for a bound UVC session.
 class Pm25Camera {
  public:
   Pm25Camera(flutter::BinaryMessenger* messenger,

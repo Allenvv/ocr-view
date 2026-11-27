@@ -40,7 +40,7 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
 
-target_link_libraries(${BINARY_NAME} PRIVATE mfplat mf mfreadwrite mfuuid ole32)
+target_link_libraries(${BINARY_NAME} PRIVATE mfplat mf mfreadwrite mfuuid ole32 bcrypt)
 
 
 # Optional ONNX Runtime CPU SDK. The default PoC still builds without a model
@@ -59,4 +59,14 @@ if(PM25_ORT_ROOT)
   target_link_libraries(${BINARY_NAME} PRIVATE "${PM25_ORT_LIB}")
   add_custom_command(TARGET ${BINARY_NAME} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${PM25_ORT_DLL}" "$<TARGET_FILE_DIR:${BINARY_NAME}>")
+  install(FILES "${PM25_ORT_DLL}" DESTINATION "." COMPONENT Runtime)
+  set(PM25_WINDOWS_ASSETS "$ENV{PM25_WINDOWS_ASSETS}" CACHE PATH "Verified offline REC and UVC profile assets")
+  if(PM25_WINDOWS_ASSETS)
+    foreach(asset rec.onnx rec.conf rec.dict uvc.conf)
+      if(NOT EXISTS "${PM25_WINDOWS_ASSETS}/${asset}")
+        message(FATAL_ERROR "Missing offline asset: ${asset}")
+      endif()
+      install(FILES "${PM25_WINDOWS_ASSETS}/${asset}" DESTINATION "." COMPONENT Runtime)
+    endforeach()
+  endif()
 endif()

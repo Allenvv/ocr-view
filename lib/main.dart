@@ -5,7 +5,6 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show listEquals;
-import 'package:uuid/uuid.dart';
 import 'capture.dart';
 import 'domain.dart';
 import 'store.dart';
@@ -55,39 +54,59 @@ Future<List<String>?> form(
   List<String> labels,
   List<String> values, {
   Set<int> numeric = const {},
+  String? Function(List<String>)? validate,
 }) async {
   final controllers = values
       .map((v) => TextEditingController(text: v))
       .toList();
+  String? error;
   final result = await showDialog<List<String>>(
     context: context,
-    builder: (context) => AlertDialog(
-      title: Text(title),
-      content: SizedBox(
-        width: 430,
-        child: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              for (var i = 0; i < labels.length; i++)
-                field(controllers[i], labels[i], numeric: numeric.contains(i)),
-            ],
+    builder: (context) => StatefulBuilder(
+      builder: (context, update) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 430,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (error != null)
+                  Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                for (var i = 0; i < labels.length; i++)
+                  field(
+                    controllers[i],
+                    labels[i],
+                    numeric: numeric.contains(i),
+                  ),
+              ],
+            ),
           ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final input = controllers.map((c) => c.text.trim()).toList();
+              final problem = validate?.call(input);
+              if (problem != null) {
+                update(() => error = problem);
+                return;
+              }
+              Navigator.pop(context, input);
+            },
+            child: const Text('保存'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(
-            context,
-            controllers.map((c) => c.text.trim()).toList(),
-          ),
-          child: const Text('保存'),
-        ),
-      ],
     ),
   );
   // Await the dialog's reverse transition before releasing its controllers.
@@ -157,11 +176,20 @@ class _HomeState extends State<Home> {
   }
 
   Future<void> add() async {
+    final ids = (await store.batches())
+        .map((row) => row['id'] as String)
+        .toSet();
+    if (!mounted) return;
     final v = await form(
       context,
       '新建批次',
       ['批次编号', '项目名称', '测试人员', '备注'],
-      [const Uuid().v4(), '', '', ''],
+      [nextBatchNumber(DateTime.now(), ids), '', '', ''],
+      validate: (input) => input.take(3).any((v) => v.isEmpty)
+          ? '批次编号、项目和测试人员不能为空'
+          : ids.contains(input.first)
+          ? '批次编号已存在，请更换'
+          : null,
     );
     if (!mounted || v == null) return;
     if (v.take(3).any((x) => x.isEmpty)) {
@@ -215,25 +243,14 @@ class _HomeState extends State<Home> {
         ),
       ],
     ),
-    bottomNavigationBar: DecoratedBox(
-      decoration: const BoxDecoration(
-        color: LabStyle.surface,
-        border: Border(top: BorderSide(color: LabStyle.line)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-          child: Center(
-            heightFactor: 1,
-            child: FilledButton.icon(
-              onPressed: add,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('新建批次'),
-              style: FilledButton.styleFrom(minimumSize: const Size(204, 48)),
-            ),
-          ),
-        ),
+    floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    floatingActionButton: FilledButton.icon(
+      onPressed: add,
+      icon: const Icon(Icons.add_rounded),
+      label: const Text('建立测试'),
+      style: FilledButton.styleFrom(
+        minimumSize: const Size(204, 48),
+        backgroundColor: LabStyle.primary.withValues(alpha: .92),
       ),
     ),
     body: FutureBuilder(
@@ -247,7 +264,12 @@ class _HomeState extends State<Home> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1100),
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              padding: EdgeInsets.fromLTRB(
+                20,
+                12,
+                20,
+                84 + MediaQuery.paddingOf(context).bottom,
+              ),
               children: [
                 const Text('AIR QUALITY WORKSPACE', style: LabStyle.eyebrow),
                 const SizedBox(height: 6),
@@ -433,7 +455,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                 jsonDecode(batch['config'] as String) as Map,
               );
         if (status == 0) {
-          await useCamera(false);
+          await useCamera();
         } else {
           await reload();
         }
@@ -453,17 +475,17 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> useCamera(bool simulated) async {
+  Future<void> useCamera() async {
     cameraPoll?.cancel();
     await source?.close();
-    final current = simulated ? DemoSource() : NativeSource();
+    final current = NativeSource()..config = config;
     source = current;
     camera = await current.open();
     if (!mounted) {
       await current.close();
       return;
     }
-    if (!simulated) {
+    {
       cameraPoll = Timer.periodic(const Duration(milliseconds: 250), (_) async {
         if (!mounted || polling || busy || status != 0 || source != current) {
           return;
@@ -545,7 +567,8 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     await store.begin(id, rois, {
       ...state.snapshot,
       ...config.toJson(),
-      'mode': input.demo ? 'demo' : 'native',
+      'mode': 'native',
+      'hardwareValidation': hardwareValidation,
     });
     batch = await store.batchById(id);
     loop = CaptureLoop(
@@ -653,8 +676,20 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       ),
     );
     if (row != null && mounted) {
+      if (camera?.texture == null) throw StateError('请先连接真实相机，再加载和核对模板');
+      final next = Store.decodeRois(row['rois']);
+      if (!validRois(next)) throw StateError('模板无效：每批最多 8 个 ROI，坐标须合法且编号不得重复');
+      if (row['viewport_version'] != 1 &&
+          !await confirm(
+            context,
+            '核对旧模板',
+            '旧模板的相机方向未知。请在真实取景中核对每个框；如不对齐请重画。',
+          )) {
+        return;
+      }
+      if (!mounted) return;
       setState(() {
-        rois = Store.decodeRois(row['rois']);
+        rois = next;
         selected = -1;
       });
     }
@@ -685,7 +720,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
     out.write(
       csvLine(
         failures
-            ? ['timestamp_ms', 'time_str', 'batch_id', 'content']
+            ? ['timestamp_ms', 'time_str', 'batch_id', 'content', 'type']
             : [
                 'timestamp_ms',
                 'scheduled_at_ms',
@@ -698,9 +733,19 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                 'is_manual_modify',
                 'remark',
                 'status',
+                'raw_pm25_value',
+                'corrected_pm25_value',
+                'model_version',
+                'model_sha256',
+                'cycle_ms',
+                'roi_index',
               ],
       ),
     );
+    final frozen = jsonDecode(batch['config'] as String) as Map;
+    final roiIndexes = {
+      for (var i = 0; i < rois.length; i++) rois[i].device: i + 1,
+    };
     var after = 0;
     while (true) {
       final rows = failures
@@ -715,6 +760,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                     dateLabel(row['time'] as int),
                     id,
                     row['content'],
+                    row['type'],
                   ]
                 : [
                     row['timestamp'],
@@ -728,6 +774,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                     row['manual'] == 1,
                     row['remark'],
                     row['status'],
+                    row['original_value'],
+                    row['manual'] == 1 ? row['value'] : null,
+                    frozen['modelVersion'],
+                    frozen['modelSha256'],
+                    frozen['period'],
+                    roiIndexes[row['device']],
                   ],
           ),
         );
@@ -778,7 +830,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               const Padding(
                 padding: EdgeInsets.only(top: 8),
                 child: Text(
-                  '正式采集：请项目维护者安装符合要求的模型，并在目标手机上完成识别、采样档位与 AF/AE 锁定验收。\n现在可进入离线演示，使用演示 ROI 后开始。',
+                  '正式采集：请项目维护者安装符合要求的模型，并在目标手机上完成识别、采样档位与 AF/AE 锁定验收。',
                 ),
               ),
           ],
@@ -786,16 +838,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
       ),
       actions: [
         TextButton(onPressed: () => Navigator.pop(c), child: const Text('关闭')),
-        if (!demo && startBlockers.isNotEmpty)
-          FilledButton(
-            onPressed: busy
-                ? null
-                : () {
-                    Navigator.pop(c);
-                    unawaited(run(() => useCamera(true)));
-                  },
-            child: const Text('进入离线演示'),
-          ),
       ],
     ),
   );
@@ -914,7 +956,7 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               tooltip: '重连相机',
               color: LabStyle.ink,
               icon: const Icon(Icons.refresh),
-              onPressed: busy ? null : () => run(() => useCamera(false)),
+              onPressed: busy ? null : () => run(() => useCamera()),
             ),
           IconButton(
             tooltip: '加载模板',
@@ -977,11 +1019,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
             ),
         ],
       );
-      final modeButton = TextButton(
-        onPressed: busy ? null : () => run(() => useCamera(!demo)),
-        style: TextButton.styleFrom(foregroundColor: LabStyle.primary),
-        child: Text(demo ? '返回真实相机' : '进入离线演示'),
-      );
       final startButton = FilledButton.icon(
         onPressed: busy
             ? null
@@ -997,20 +1034,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
           size: 19,
         ),
         label: Text(available ? (demo ? '开始演示' : '开始采集') : '查看启动条件'),
-      );
-      final offerSample = demo && rois.isEmpty;
-      final sampleButton = TextButton(
-        onPressed: busy
-            ? null
-            : () => setState(() {
-                rois = [
-                  const Roi('DEV01', .11, .28, .37, .58),
-                  const Roi('DEV02', .58, .28, .84, .58),
-                ];
-                selected = 0;
-              }),
-        style: TextButton.styleFrom(foregroundColor: LabStyle.primary),
-        child: const Text('使用演示 ROI'),
       );
       return ColoredBox(
         color: LabStyle.canvas,
@@ -1031,15 +1054,21 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               onSelect: (i) => setState(() => selected = i),
               onChange: busy || (!demo && camera?.texture == null)
                   ? null
-                  : (i, r) => setState(() {
-                      rois = [...rois];
-                      if (i < 0) {
-                        rois.add(r);
-                        selected = rois.length - 1;
-                      } else {
-                        rois[i] = r;
+                  : (i, r) {
+                      if (i < 0 && rois.length >= maxRois) {
+                        notice(context, '每批最多 8 个 ROI');
+                        return;
                       }
-                    }),
+                      setState(() {
+                        rois = [...rois];
+                        if (i < 0) {
+                          rois.add(r);
+                          selected = rois.length - 1;
+                        } else {
+                          rois[i] = r;
+                        }
+                      });
+                    },
             ),
             SafeArea(
               child: Padding(
@@ -1088,8 +1117,6 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ),
-                              if (offerSample) sampleButton,
-                              modeButton,
                               startButton,
                             ],
                           ),
@@ -1228,6 +1255,14 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
               color: LabStyle.accentBlue,
               background: LabStyle.accentBlueWash,
             ),
+            if (jsonDecode(batch['config'] as String)['hardwareValidation'] ==
+                    true &&
+                !demo)
+              const LabBadge(
+                '真机验证构建 · 非正式交付',
+                color: LabStyle.amber,
+                background: LabStyle.amberWash,
+              ),
             if (demo)
               const LabBadge(
                 '离线演示 · 合成读数',
@@ -1386,6 +1421,8 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
         Wrap(
           spacing: 8,
           runSpacing: 6,
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
           children: [
             if (status == 1) ...[
               OutlinedButton.icon(
@@ -1396,6 +1433,12 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
                           await loop?.pause();
                           await store.log('action', '暂停采集', id);
                         } else {
+                          final current = await source!.state();
+                          if (!current.allows(rois, config.period)) {
+                            throw StateError(
+                              current.blockers(rois, config.period).join(' '),
+                            );
+                          }
                           loop?.resume();
                           await store.log('action', '恢复采集', id);
                         }
@@ -1440,7 +1483,15 @@ class _BatchPageState extends State<BatchPage> with WidgetsBindingObserver {
         if (status == 1)
           Wrap(spacing: 8, children: [for (final roi in rois) deviceCard(roi)]),
         const SizedBox(height: 8),
-        if (status == 1) viewSelector,
+        if (status == 1)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: () => setState(() => table = !table),
+              icon: Icon(table ? Icons.expand_less : Icons.expand_more),
+              label: Text(table ? '收起记录表' : '展开记录表'),
+            ),
+          ),
         const SizedBox(height: 8),
         if (table) ...[
           Wrap(
@@ -1722,6 +1773,8 @@ Future<void> editSettings(BuildContext context, Store store) async {
       '告警下限（可空）',
       '告警上限（可空）',
       '曲线窗口（60–1800 秒）',
+      '失败快照（0 关闭 / 1 保存）',
+      '相机调优超时（1000–5000 ms）',
     ],
     [
       '${config.period}',
@@ -1730,8 +1783,11 @@ Future<void> editSettings(BuildContext context, Store store) async {
       config.alarmMin?.toString() ?? '',
       config.alarmMax?.toString() ?? '',
       '${config.window}',
+      config.saveSnapshot ? '1' : '0',
+      '${config.tuneTimeoutMs}',
     ],
-    numeric: {0, 1, 2, 3, 4, 5},
+    numeric: {0, 1, 2, 3, 4, 5, 6, 7},
+    validate: (v) => const {'0', '1'}.contains(v[6]) ? null : '失败快照仅可填写 0 或 1',
   );
   if (v == null) return;
   try {
@@ -1743,6 +1799,8 @@ Future<void> editSettings(BuildContext context, Store store) async {
         alarmMin: v[3].isEmpty ? null : double.parse(v[3]),
         alarmMax: v[4].isEmpty ? null : double.parse(v[4]),
         window: int.parse(v[5]),
+        saveSnapshot: v[6] == '1',
+        tuneTimeoutMs: int.parse(v[7]),
       ),
     );
     if (context.mounted) notice(context, '配置已保存，仅对之后启动的批次生效');
@@ -1792,7 +1850,7 @@ Future<void> showLogs(BuildContext context, Store store, String? id) async {
                 final r = rows[i];
                 return ListTile(
                   title: Text('${r['type']} · ${dateLabel(r['time'] as int)}'),
-                  subtitle: SelectableText('${r['content']}'),
+                  subtitle: SelectableText(logSummary(r)),
                 );
               },
             );

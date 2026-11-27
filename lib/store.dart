@@ -13,7 +13,7 @@ class Store extends GeneratedDatabase {
             ),
       );
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
   @override
   Iterable<TableInfo<Table, dynamic>> get allTables => const [];
   @override
@@ -21,6 +21,13 @@ class Store extends GeneratedDatabase {
     onCreate: (_) async {
       for (final sql in schema) {
         await customStatement(sql);
+      }
+    },
+    onUpgrade: (_, from, to) async {
+      if (from < 2) {
+        await customStatement(
+          'ALTER TABLE templates ADD COLUMN viewport_version INTEGER',
+        );
       }
     },
     beforeOpen: (_) async {
@@ -43,7 +50,7 @@ class Store extends GeneratedDatabase {
     '''CREATE TABLE logs(id INTEGER PRIMARY KEY AUTOINCREMENT, time INTEGER NOT NULL, type TEXT NOT NULL,
       content TEXT NOT NULL, batch TEXT REFERENCES batches(id) ON DELETE CASCADE)''',
     'CREATE INDEX logs_batch ON logs(batch,type,id)',
-    'CREATE TABLE templates(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, rois TEXT NOT NULL, saved INTEGER NOT NULL)',
+    'CREATE TABLE templates(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, rois TEXT NOT NULL, saved INTEGER NOT NULL, viewport_version INTEGER)',
     'CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id=1), config TEXT NOT NULL)',
   ];
   int get now => DateTime.now().millisecondsSinceEpoch;
@@ -108,8 +115,8 @@ class Store extends GeneratedDatabase {
           Variable(id),
         ]);
   Future<List<DataRowMap>> ocrLogs(String id, int afterId) => query(
-    'SELECT * FROM logs WHERE batch=? AND type=? AND id>? ORDER BY id LIMIT 1000',
-    [Variable(id), const Variable('ocr'), Variable(afterId)],
+    "SELECT * FROM logs WHERE batch=? AND type IN ('ocr','dropFrame') AND id>? ORDER BY id LIMIT 1000",
+    [Variable(id), Variable(afterId)],
   );
   Future<void> writeRound(
     String id,
@@ -212,7 +219,7 @@ class Store extends GeneratedDatabase {
       throw ArgumentError('模板名称或 ROI 无效');
     }
     await customStatement(
-      'INSERT INTO templates(name,rois,saved) VALUES(?,?,?) ON CONFLICT(name) DO UPDATE SET rois=excluded.rois,saved=excluded.saved',
+      'INSERT INTO templates(name,rois,saved,viewport_version) VALUES(?,?,?,1) ON CONFLICT(name) DO UPDATE SET rois=excluded.rois,saved=excluded.saved,viewport_version=1',
       [name.trim(), encodeRois(rois), now],
     );
   }

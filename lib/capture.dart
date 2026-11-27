@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/services.dart';
 import 'domain.dart';
 import 'store.dart';
+
+const hardwareValidation = bool.fromEnvironment('PM25_HARDWARE_VALIDATION');
 
 class CameraState {
   final Map<Object?, Object?> data;
@@ -18,7 +21,9 @@ class CameraState {
   List<num>? get crop => (data['crop'] as List?)?.cast<num>();
   List<String> blockers(List<Roi> rois, int period) {
     final isDemo = data['mode'] == 'demo';
-    // An adapter can report a measured profile limit; there is no editor limit.
+    final profiles = data['profiles'] as Map?;
+    final validation =
+        hardwareValidation && !isDemo && samplingPeriods.contains(period);
     final capacity = data['roiLimit'] as int?;
     return [
       if (isDemo &&
@@ -26,18 +31,30 @@ class CameraState {
               data['ready'] != true ||
               data['framesReady'] != true))
         '离线演示尚未准备好。',
-      if (!isDemo && data['modelAvailable'] != true) '未安装可用的 REC 识别模型。',
-      if (!isDemo && data['validated'] != true) '当前手机及相机采样档位未验收。',
-      if (!isDemo && data['ready'] != true) 'AF/AE 锁定和正式识别链路未验收。',
+      if (!isDemo && data['modelAvailable'] != true)
+        '未安装可用的 REC 识别模型。 ${data['modelProblem'] ?? ''}',
+      if (!isDemo && !validation && data['validated'] != true)
+        '当前设备及相机采样档位未验收。',
+      if (!isDemo && data['ready'] != true)
+        data['platform'] == 'Windows Media Foundation'
+            ? '未确认 UVC 固定设备与模式。'
+            : 'AF/AE 锁定和正式识别链路不可用。',
       if (!isDemo && data['framesReady'] != true) '未收到新鲜相机帧；请检查相机权限并重连。',
       if (data['storageReady'] != true) '可用存储不足或尚未确认。',
       if (!isDemo &&
+          !validation &&
+          profiles != null &&
+          !profiles.containsKey('$period:${rois.length}'))
+        '该 ROI 数量与周期组合尚未通过验收。',
+      if (!isDemo &&
+          !validation &&
           data['validated'] == true &&
           capacity != null &&
           capacity > 0 &&
           rois.length > capacity)
         '目标设备已验收的采样档位仅支持 $capacity 个 ROI；请更换已验收档位。',
-      if ((isDemo || data['validated'] == true) &&
+      if (!validation &&
+          (isDemo || data['validated'] == true) &&
           !(data['periods'] as List? ?? []).contains(period))
         '当前档位不支持该采样周期。',
     ];
@@ -58,6 +75,8 @@ abstract class CaptureSource {
 }
 
 class NativeSource implements CaptureSource {
+  Object? _sessionId;
+  CaptureConfig config = const CaptureConfig();
   static const channel = MethodChannel('pm25_capture/camera');
   @override
   bool get demo => false;
@@ -72,18 +91,40 @@ class NativeSource implements CaptureSource {
   }
 
   @override
-  Future<CameraState> open() => _call('open');
+  Future<CameraState> open() async {
+    final report = await _call('open');
+    _sessionId = report.data['sessionId'];
+    return report;
+  }
+
   @override
   Future<CameraState> state() => _call('state');
   @override
-  Future<CameraState> tune(Roi roi) => _call('tune', roi.toJson());
+  Future<CameraState> tune(Roi roi) =>
+      _call('tune', {...roi.toJson(), 'timeoutMs': config.tuneTimeoutMs});
   @override
   Future<FrameReadings> sample(List<Roi> rois, int budgetMs) async {
-    final result = await channel.invokeMapMethod<Object?, Object?>('sample', {
-      'rois': rois.map((r) => r.toJson()).toList(),
-      'budgetMs': budgetMs,
-    });
-    if (result == null) throw StateError('无帧');
+    final elapsed = Stopwatch()..start();
+    var result = await channel
+        .invokeMapMethod<Object?, Object?>('sample', {
+          'rois': rois.map((r) => r.toJson()).toList(),
+          'budgetMs': budgetMs,
+          'sessionId': _sessionId,
+          'saveSnapshot': config.saveSnapshot,
+          'low': config.low,
+        })
+        .timeout(Duration(milliseconds: budgetMs));
+    while (result?['pending'] == true &&
+        elapsed.elapsedMilliseconds < budgetMs) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      result = await channel.invokeMapMethod<Object?, Object?>('sampleResult');
+    }
+    if (result?['fatal'] case final String code) {
+      throw PlatformException(code: code);
+    }
+    if (result == null || result['pending'] == true) {
+      throw StateError('无帧或采集超时');
+    }
     return FrameReadings(result['timestampMs'] as int, [
       for (final item in result['readings'] as List)
         Reading(
@@ -91,6 +132,9 @@ class NativeSource implements CaptureSource {
           item['text'] as String,
           (item['confidence'] as num).toDouble(),
           item['error'] as String?,
+          item['snapshot'] is Uint8List
+              ? base64Encode(item['snapshot'] as Uint8List)
+              : null,
         ),
     ]);
   }
@@ -253,7 +297,12 @@ class CaptureLoop {
         if (durations.length > 300) durations.removeAt(0);
         if (!_active) return;
         if (issue is PlatformException &&
-            const ['camera_lost', 'storage_low'].contains(issue.code)) {
+            const [
+              'camera_lost',
+              'storage_low',
+              'lock_lost',
+              'model_lost',
+            ].contains(issue.code)) {
           _active = false;
           await store.stop(id, issue.message ?? issue.code);
           onFatal(issue.message ?? issue.code);

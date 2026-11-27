@@ -1,4 +1,19 @@
+import 'dart:convert';
 import 'dart:math' as math;
+
+const maxRois = 8;
+
+String nextBatchNumber(DateTime now, Iterable<String> existing) {
+  String two(int value) => value.toString().padLeft(2, '0');
+  final base =
+      '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}';
+  final ids = existing.toSet();
+  if (!ids.contains(base)) return base;
+  for (var suffix = 2; ; suffix++) {
+    final candidate = '$base-$suffix';
+    if (!ids.contains(candidate)) return candidate;
+  }
+}
 
 const samplingPeriods = [1000, 2000, 5000];
 const statuses = ['normal', 'review', 'failed'];
@@ -32,6 +47,7 @@ class Roi {
 
 bool validRois(List<Roi> rois) =>
     rois.isNotEmpty &&
+    rois.length <= maxRois &&
     rois.every((r) => r.valid) &&
     rois.map((r) => r.device.trim().toUpperCase()).toSet().length ==
         rois.length;
@@ -45,12 +61,15 @@ Roi rotateRoi(Roi r, int turns) => switch (turns % 4) {
 };
 
 class CaptureConfig {
-  final int period, window;
+  final int period, window, tuneTimeoutMs;
+  final bool saveSnapshot;
   final double high, low;
   final double? alarmMin, alarmMax;
   const CaptureConfig({
     this.period = 1000,
     this.window = 300,
+    this.saveSnapshot = false,
+    this.tuneTimeoutMs = 2000,
     this.high = .85,
     this.low = .60,
     this.alarmMin,
@@ -58,6 +77,8 @@ class CaptureConfig {
   });
   bool get valid =>
       samplingPeriods.contains(period) &&
+      tuneTimeoutMs >= 1000 &&
+      tuneTimeoutMs <= 5000 &&
       window >= 60 &&
       window <= 1800 &&
       high >= .75 &&
@@ -71,6 +92,8 @@ class CaptureConfig {
   Map<String, Object?> toJson() => {
     'period': period,
     'window': window,
+    'saveSnapshot': saveSnapshot,
+    'tuneTimeoutMs': tuneTimeoutMs,
     'high': high,
     'low': low,
     'alarmMin': alarmMin,
@@ -79,6 +102,8 @@ class CaptureConfig {
   factory CaptureConfig.fromJson(Map data) => CaptureConfig(
     period: data['period'] as int? ?? 1000,
     window: data['window'] as int? ?? 300,
+    saveSnapshot: data['saveSnapshot'] == true,
+    tuneTimeoutMs: data['tuneTimeoutMs'] as int? ?? 2000,
     high: (data['high'] as num?)?.toDouble() ?? .85,
     low: (data['low'] as num?)?.toDouble() ?? .60,
     alarmMin: (data['alarmMin'] as num?)?.toDouble(),
@@ -89,8 +114,14 @@ class CaptureConfig {
 class Reading {
   final String device, text;
   final double confidence;
-  final String? error;
-  const Reading(this.device, this.text, this.confidence, [this.error]);
+  final String? error, snapshot;
+  const Reading(
+    this.device,
+    this.text,
+    this.confidence, [
+    this.error,
+    this.snapshot,
+  ]);
   Map<String, Object?> classify(CaptureConfig config) {
     final c = confidence.isFinite && confidence >= 0 && confidence <= 1
         ? confidence
@@ -117,6 +148,8 @@ class Reading {
           : 'review',
       'text': text,
       'error': failure,
+      if (config.saveSnapshot && failure != null && snapshot != null)
+        'snapshotPgmBase64': snapshot,
     };
   }
 }
@@ -128,6 +161,20 @@ class FrameReadings {
 }
 
 typedef DataRowMap = Map<String, Object?>;
+String logSummary(DataRowMap row) {
+  final content = '${row['content']}';
+  if (row['type'] != 'ocr') return content;
+  try {
+    final data = jsonDecode(content);
+    if (data is Map && data.remove('snapshotPgmBase64') != null) {
+      return '${jsonEncode(data)} · 已保存 ROI 快照（失败日志 CSV 可导出）';
+    }
+  } on FormatException {
+    // Legacy logs may contain plain text.
+  }
+  return content;
+}
+
 String dateLabel(int? millis) => millis == null
     ? '—'
     : DateTime.fromMillisecondsSinceEpoch(

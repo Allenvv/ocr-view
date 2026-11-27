@@ -3,6 +3,18 @@ package com.lab.pm25_capture
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.StatFs
+import android.os.SystemClock
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
+import android.hardware.camera2.TotalCaptureResult
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.Camera2CameraInfo
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.CaptureRequestOptions
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
+import org.json.JSONArray
 import android.util.Size
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -24,6 +36,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.view.TextureRegistry
 import java.util.concurrent.Executors
 
+@ExperimentalCamera2Interop
 class MainActivity : FlutterActivity() {
     private var channel: MethodChannel? = null
     private var provider: ProcessCameraProvider? = null
@@ -31,6 +44,38 @@ class MainActivity : FlutterActivity() {
     private var texture: TextureRegistry.SurfaceTextureEntry? = null
     private var pending: MethodChannel.Result? = null
     private val worker = Executors.newSingleThreadExecutor()
+    private val analysisWorker = Executors.newSingleThreadExecutor()
+    private val handler by lazy { android.os.Handler(mainLooper) }
+    @Volatile private var af: Int? = null
+    @Volatile private var ae: Int? = null
+    @Volatile private var tuned = false
+    private var tuning = false
+    private var tuneGeneration = 0
+    private val locked get() = tuned && af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED && ae == CaptureResult.CONTROL_AE_STATE_LOCKED
+    private val profiles by lazy {
+        runCatching { JSONArray(assets.open("accepted-profiles.json").bufferedReader().use { it.readText() }) }.getOrElse { JSONArray() }
+    }
+    private fun capacities(): Map<String, Int> {
+        val frame = latest ?: return emptyMap()
+        val current = if (modelAvailable) model ?: return emptyMap() else return emptyMap()
+        val camera = boundCamera ?: return emptyMap()
+        val cameraId = Camera2CameraInfo.from(camera.cameraInfo).cameraId
+        val capacities = mutableMapOf<String, Int>()
+        for (i in 0 until profiles.length()) {
+            val item = profiles.optJSONObject(i) ?: continue
+            if (item.optString("fingerprint") != android.os.Build.FINGERPRINT ||
+                item.optString("cameraId") != cameraId || item.optString("modelSha256") != current.sha256 ||
+                item.optString("runtimeVersion") != "1.22.0" ||
+                item.optInt("width") != frame.uprightWidth || item.optInt("height") != frame.uprightHeight) continue
+            val period = item.optInt("periodMs")
+            val count = item.optInt("roiCount")
+            if (period in listOf(1000, 2000, 5000) && count in 1..8) capacities["$period:$count"] = count
+        }
+        return capacities
+    }
+    private fun storageReady() = runCatching { StatFs(filesDir.absolutePath).availableBytes >= 100L * 1024 * 1024 }.getOrDefault(false)
+    private fun freshFrame() = frameMs > 0 && SystemClock.elapsedRealtime() - frameMs < 1500
+
     @Volatile private var frameMs = 0L
     private var previewCrop: List<Double>? = null
     private var cropWidth = 9
@@ -79,7 +124,7 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
-                "sample" -> result.error("unsupported_profile", "尚未登记经验证的 REC 模型、相机模式及 AF/AE 锁定路径", null)
+                "sample" -> sample(call.arguments as? Map<*, *>, result)
                 "close" -> { closeCamera(); result.success(null) }
                 else -> result.notImplemented()
             }
@@ -87,7 +132,8 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun report(): Map<String, Any?> {
-        val storage = runCatching { StatFs(filesDir.absolutePath).availableBytes >= 100L * 1024 * 1024 }.getOrDefault(false)
+        val storage = storageReady()
+        val capacities = capacities()
         // The analysis/ROI coordinate system stays locked to rotation 0.
         // The preview texture and the editable ROI share the same display delta.
         val display = displayRotation()
@@ -99,11 +145,15 @@ class MainActivity : FlutterActivity() {
         return mapOf("textureId" to if (previewCrop != null) texture?.id() else null,
             "width" to if (swap) cropHeight else cropWidth, "height" to if (swap) cropWidth else cropHeight,
             "turns" to turns, "bufferTurns" to bufferTurns, "crop" to previewCrop,
-            "modelAvailable" to modelAvailable,
+            "modelAvailable" to modelAvailable, "modelProblem" to modelProblem,
+            "modelVersion" to model?.version, "modelSha256" to model?.sha256, "runtimeVersion" to "1.22.0",
+            "sessionId" to generation, "afState" to af, "aeState" to ae, "locked" to locked,
+            "cameraId" to cameraInfo?.let { Camera2CameraInfo.from(it).cameraId },
+            "fingerprint" to android.os.Build.FINGERPRINT, "analysisWidth" to latest?.uprightWidth, "analysisHeight" to latest?.uprightHeight,
             "platform" to "Android CameraX", "device" to android.os.Build.MODEL,
-            "framesReady" to (frameMs > 0 && System.currentTimeMillis() - frameMs < 1500),
-            "storageReady" to storage, "validated" to false, "ready" to false, "roiLimit" to 0,
-            "periods" to emptyList<Int>(), "tuneSupported" to (boundCamera != null), "probeSupported" to modelAvailable, "message" to detail)
+            "framesReady" to freshFrame(),
+            "storageReady" to storage, "validated" to capacities.isNotEmpty(), "ready" to locked, "profiles" to capacities,
+            "periods" to capacities.keys.map { it.substringBefore(':').toInt() }.distinct(), "tuneSupported" to (boundCamera != null), "probeSupported" to modelAvailable, "message" to detail)
     }
 
     private fun finishOpen() { pending?.success(report()); pending = null }
@@ -134,7 +184,16 @@ class MainActivity : FlutterActivity() {
                 val naturalLandscape = (resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) != sideways
                 val ratio = if (naturalLandscape) Rational(16, 9) else Rational(9, 16)
                 val rotation = Surface.ROTATION_0
-                val preview = Preview.Builder().setTargetRotation(rotation).build().also { useCase ->
+                val previewBuilder = Preview.Builder().setTargetRotation(rotation)
+                Camera2Interop.Extender(previewBuilder).setSessionCaptureCallback(object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                        if (generation != token) return
+                        af = result.get(CaptureResult.CONTROL_AF_STATE)
+                        ae = result.get(CaptureResult.CONTROL_AE_STATE)
+                        if (tuned && !locked) tuned = false
+                    }
+                })
+                val preview = previewBuilder.build().also { useCase ->
                     useCase.setSurfaceProvider { request ->
                         if (texture !== entry) request.willNotProvideSurface()
                         else {
@@ -160,7 +219,7 @@ class MainActivity : FlutterActivity() {
                 @Suppress("DEPRECATION")
                 val analysis = ImageAnalysis.Builder().setTargetResolution(Size(1280,720)).setTargetRotation(rotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
-                analysis.setAnalyzer(worker) { proxy ->
+                analysis.setAnalyzer(analysisWorker) { proxy ->
                     try {
                         val now = System.currentTimeMillis()
                         if (generation == token) {
@@ -168,7 +227,7 @@ class MainActivity : FlutterActivity() {
                                 val frame = runCatching { LumaFrame.from(proxy, now) }.getOrNull()
                                 if (generation == token) latest = frame
                             }
-                            frameMs = now
+                            frameMs = SystemClock.elapsedRealtime()
                         }
                     } finally { proxy.close() }
                 }
@@ -206,47 +265,122 @@ class MainActivity : FlutterActivity() {
             }
             val point = SurfaceOrientedMeteringPointFactory(1f, 1f, requireNotNull(previewUseCase))
                 .createPoint((crop[0]+x*crop[2]).toFloat(), (crop[1]+y*crop[3]).toFloat())
-            FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE).build()
+            FocusMeteringAction.Builder(point, FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE).disableAutoCancel().build()
         }
         try {
+            if (tuning) { result.error("busy", "相机正在调优", null); return }
+            tuned = false
+            val info = Camera2CameraInfo.from(camera.cameraInfo)
+            if (info.getCameraCharacteristic(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) != true) {
+                detail = "相机不支持 AE 锁定"; result.success(report()); return
+            }
             val action = make()
             if (!camera.cameraInfo.isFocusMeteringSupported(action)) {
                 detail = "该相机不支持 ROI 点调焦/测光，真实采集仍禁用"
                 result.success(report()); return
             }
             val token = generation
-            val future = camera.cameraControl.startFocusAndMetering(action)
-            val handler = android.os.Handler(mainLooper)
-            var waiting = true
-            handler.postDelayed({
-                if (waiting) {
-                    waiting = false
-                    if (token == generation) {
-                        camera.cameraControl.cancelFocusAndMetering()
-                        detail = "ROI 调优超时；AF/AE 未确认锁定"
-                    }
-                    result.success(report())
+            val attempt = ++tuneGeneration
+            val control = Camera2CameraControl.from(camera.cameraControl)
+            val executor = ContextCompat.getMainExecutor(this)
+            fun setAeLock(value: Boolean) = control.addCaptureRequestOptions(
+                CaptureRequestOptions.Builder().setCaptureRequestOption(CaptureRequest.CONTROL_AE_LOCK, value).build())
+            tuning = true
+            val end = SystemClock.elapsedRealtime() + ((roi["timeoutMs"] as? Number)?.toLong() ?: 2000).coerceIn(1000, 5000)
+            fun finish(success: Boolean, message: String) {
+                if (token == generation && attempt == tuneGeneration) {
+                    tuning = false
+                    tuned = success
+                    detail = message
+                    if (!success) { setAeLock(false); camera.cameraControl.cancelFocusAndMetering() }
                 }
-            }, 2000)
-            future.addListener({
-                if (waiting) {
-                    waiting = false
-                    if (token == generation) {
-                        val focused = runCatching { future.get().isFocusSuccessful }.getOrDefault(false)
-                        detail = if (focused) "相机报告对焦成功；AE/锁定未确认，真实采集仍禁用"
-                            else "相机未确认对焦成功或锁定，真实采集仍禁用"
+                result.success(report())
+            }
+            var focusResult: androidx.camera.core.FocusMeteringResult? = null
+            var focusFinished = false
+            var lockRequested = false
+            val verify = object : Runnable {
+                override fun run() {
+                    if (token != generation || attempt != tuneGeneration) { result.error("camera_lost", "相机会话已改变", null); return }
+                    if (lockRequested && af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED && ae == CaptureResult.CONTROL_AE_STATE_LOCKED) {
+                        finish(true, "AF/AE 已确认锁定"); return
                     }
-                    result.success(report())
+                    if (SystemClock.elapsedRealtime() >= end || (focusFinished && focusResult?.isFocusSuccessful != true)) {
+                        finish(false, "AF/AE 未确认锁定，请重试"); return
+                    }
+                    if (!lockRequested && focusResult?.isFocusSuccessful == true &&
+                        af == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED && ae == CaptureResult.CONTROL_AE_STATE_CONVERGED) {
+                        lockRequested = true
+                        setAeLock(true)
+                    }
+                    handler.postDelayed(this, 40)
                 }
-            }, ContextCompat.getMainExecutor(this))
-        } catch (e: Exception) { result.error("tune_failed", e.message, null) }
+            }
+            val unlock = setAeLock(false)
+            unlock.addListener({
+                if (token == generation && attempt == tuneGeneration && tuning) {
+                    runCatching { unlock.get() }.onSuccess {
+                        val focus = camera.cameraControl.startFocusAndMetering(action)
+                        focus.addListener({ focusResult = runCatching { focus.get() }.getOrNull(); focusFinished = true }, executor)
+                    }.onFailure { focusFinished = true }
+                }
+            }, executor)
+            handler.post(verify)
+        } catch (e: Exception) { tuning = false; result.error("tune_failed", e.message, null) }
     }
 
     @Suppress("DEPRECATION")
     private fun displayRotation(): Int = windowManager.defaultDisplay.rotation
 
+    private fun sample(args: Map<*, *>?, result: MethodChannel.Result) {
+        val token = generation
+        val frame = latest
+        if (args?.get("sessionId") != token || !freshFrame() || frame == null) {
+            result.error("camera_lost", "相机会话或帧已失效", null); return
+        }
+        if (!locked) { result.error("lock_lost", "AF/AE 锁定已失效", null); return }
+        if (!storageReady()) { result.error("storage_low", "本地存储空间不足", null); return }
+        val rec = if (modelAvailable) model else null
+        if (rec == null) { result.error("model_lost", modelProblem ?: "REC 未加载", null); return }
+        val rois = (args["rois"] as? List<*>)?.map { it as? Map<*, *> }
+        val budget = (args["budgetMs"] as? Number)?.toLong() ?: 0
+        if (rois == null || rois.size !in 1..8 || rois.any { it?.get("deviceId") !is String } || budget !in 1..4000) {
+            result.error("invalid_sample", "ROI 或采样预算无效", null); return
+        }
+        if (probeRunning) { result.error("busy", "REC 正在运行", null); return }
+        val snapshot = args["saveSnapshot"] == true
+        val low = (args["low"] as? Number)?.toDouble() ?: .60
+        probeRunning = true
+        val deadline = SystemClock.elapsedRealtime() + budget
+        worker.execute {
+            val readings = mutableListOf<Map<String, Any>>()
+            for (roi in rois) {
+                if (generation != token || SystemClock.elapsedRealtime() >= deadline) break
+                val region = requireNotNull(roi)
+                val reading = rec.recognize(frame, region)
+                val value = (reading["text"] as String).toDoubleOrNull()
+                val failed = reading["error"] != null || value == null || !value.isFinite() || (reading["confidence"] as Number).toDouble() < low
+                readings.add(if (snapshot && failed) reading + (frame.snapshot(region)?.let { mapOf("snapshot" to it) } ?: emptyMap()) else reading)
+            }
+            runOnUiThread {
+                probeRunning = false
+                when {
+                    generation != token || !freshFrame() -> result.error("camera_lost", "相机会话已失效", null)
+                    !locked -> result.error("lock_lost", "采样期间 AF/AE 锁定失效", null)
+                    readings.size != rois.size || SystemClock.elapsedRealtime() >= deadline -> result.error("sample_timeout", "识别超时", null)
+                    else -> result.success(mapOf("timestampMs" to frame.timestamp, "readings" to readings))
+                }
+            }
+        }
+    }
+
     private fun closeCamera(resetDetail: Boolean = true) {
         generation++
+        tuneGeneration++
+        tuned = false
+        tuning = false
+        af = null
+        ae = null
         provider?.unbindAll()
         boundCamera = null
         texture?.release()
@@ -267,6 +401,7 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         closeCamera()
         worker.execute { model?.close(); model = null }
+        analysisWorker.shutdown()
         worker.shutdown()
         super.onDestroy()
     }

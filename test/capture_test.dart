@@ -43,6 +43,24 @@ void main() {
     },
   );
 
+  test('production profile is approved for an exact ROI count and period', () {
+    final camera = const CameraState({
+      'validated': true,
+      'ready': true,
+      'framesReady': true,
+      'modelAvailable': true,
+      'storageReady': true,
+      'profiles': {'1000:3': 3, '2000:8': 8},
+      'periods': [1000, 2000],
+    });
+    List<Roi> rois(int count) =>
+        List.generate(count, (i) => Roi('DEV$i', .1, .1, .4, .4));
+    expect(camera.allows(rois(3), 1000), isTrue);
+    expect(camera.allows(rois(8), 2000), isTrue);
+    expect(camera.allows(rois(8), 1000), isFalse);
+    expect(camera.allows(rois(1), 1000), isFalse);
+  });
+
   test(
     'offline demo writes every ROI beyond five to SQLite with demo provenance',
     () async {
